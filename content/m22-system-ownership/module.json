@@ -1,0 +1,7 @@
+{
+  "title": "Own the transport boundaries",
+  "part": "Part VI — Owning the system",
+  "stage": 3,
+  "summary": "Replace supplied HTTP and queue adapters with your own implementations, then prove the existing system still works.",
+  "items": ["l1-http-boundaries", "f22-http-context", "l2-queue-lifecycle", "f22-queue-transport"]
+}

@@ -1,0 +1,7 @@
+{
+  "title": "Identity belongs to the request",
+  "part": "Part IV — Connected systems",
+  "stage": 3,
+  "summary": "Separate authentication, tenant selection and action permission; make caches respect all three.",
+  "items": ["l1-context", "d1-scoped-loader", "l2-cache-isolation", "b1-leaky-cache", "f15-context"]
+}

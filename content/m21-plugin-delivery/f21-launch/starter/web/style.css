@@ -1,0 +1,154 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #e5e9e8;
+  background: #101817;
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+  border: 1px solid #426459;
+  background: #18382d;
+  color: #d1f5de;
+  border-radius: 7px;
+  padding: 9px 13px;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+input,
+select {
+  border: 1px solid #42554f;
+  background: #121f1b;
+  color: inherit;
+  border-radius: 6px;
+  padding: 9px;
+  min-width: 0;
+}
+.relay-app {
+  max-width: 1000px;
+  padding: 30px;
+  margin: auto;
+}
+header {
+  padding-bottom: 24px;
+}
+h1 {
+  font-size: 42px;
+  letter-spacing: -1.8px;
+  margin: 8px 0;
+}
+h2 {
+  font-size: 20px;
+}
+.eyebrow {
+  color: #8bd0ac;
+  font-size: 11px;
+  letter-spacing: 2px;
+}
+p {
+  line-height: 1.6;
+  color: #aabdb5;
+}
+section {
+  background: #18231f;
+  border: 1px solid #30453c;
+  border-radius: 12px;
+  padding: 22px;
+  margin-bottom: 20px;
+}
+label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  color: #aec5b9;
+}
+.identity,
+form,
+.actions {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.identity span {
+  font-size: 12px;
+  color: #91aa9e;
+  padding: 10px;
+}
+form {
+  margin-bottom: 16px;
+}
+form label:nth-child(2) {
+  flex: 1;
+  min-width: 180px;
+}
+.ops-counts {
+  display: flex;
+  gap: 48px;
+  flex-wrap: wrap;
+}
+.ops-counts dt {
+  font-size: 13px;
+  color: #abc1b4;
+}
+.ops-counts dd {
+  margin: 5px 0;
+  font-size: 30px;
+  color: #92e3b6;
+}
+.tickets article {
+  padding: 15px 0;
+  border-bottom: 1px solid #30453c;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: center;
+}
+.tickets p {
+  margin: 5px 0;
+  font-size: 13px;
+}
+[role='alert'] {
+  color: #ffaba0;
+}
+footer {
+  font-size: 12px;
+  color: #97ac9f;
+  padding: 10px 0;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #c3f5a8;
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .relay-app {
+    padding: 16px;
+  }
+  section {
+    padding: 15px;
+  }
+  .ops-counts {
+    gap: 24px;
+  }
+  .tickets article {
+    align-items: start;
+    flex-direction: column;
+  }
+  h1 {
+    font-size: 34px;
+  }
+}

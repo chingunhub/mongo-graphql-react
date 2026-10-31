@@ -1,0 +1,7 @@
+{
+  "title": "Resolvers meet Mongoose",
+  "part": "Part II — GraphQL & Apollo Server",
+  "stage": 1,
+  "summary": "Resolver arguments in depth, the traps between Mongoose objects and GraphQL types, mutations, and a modular resolver layout.",
+  "items": ["l1-resolver-anatomy", "l2-mutations-modules", "d1-recipes-api", "b1-blank-events", "f7-resolvers"]
+}

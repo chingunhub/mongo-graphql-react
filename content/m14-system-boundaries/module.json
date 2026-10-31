@@ -1,0 +1,7 @@
+{
+  "title": "Reading a system, not just a file",
+  "part": "Part IV — Connected systems",
+  "stage": 3,
+  "summary": "Trace ownership, dependency direction and change impact before adding Relaydesk’s first plugin.",
+  "items": ["l1-boundaries", "d1-affected", "l2-monorepos", "f14-manifest"]
+}

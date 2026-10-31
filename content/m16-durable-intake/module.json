@@ -1,0 +1,7 @@
+{
+  "title": "Durable intake under concurrency",
+  "part": "Part IV — Connected systems",
+  "stage": 3,
+  "summary": "Use database constraints and atomic writes to survive races, retries and crashes.",
+  "items": ["l1-concurrency", "d1-seat-claim", "l2-outbox", "f16-intake"]
+}

@@ -1,0 +1,27 @@
+# Pushing a tag like v0.1.0 publishes what the pasted install line downloads.
+# Bump the version in package.json first: students update to the newest release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run release
+      - run: |
+          gh release create "$GITHUB_REF_NAME" release/* --title "Forge Academy $GITHUB_REF_NAME" --notes "Install instructions are in the README." ||
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

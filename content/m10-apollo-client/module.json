@@ -1,0 +1,7 @@
+{
+  "title": "Apollo Client basics",
+  "part": "Part III — Apollo Client & React",
+  "stage": 2,
+  "summary": "How Apollo Client thinks (links + a cache), useQuery's lifecycle and options, auth headers, errors — and testing components properly.",
+  "items": ["l1-apollo-client", "l2-testing-components", "d1-project-picker", "f10-issue-list"]
+}

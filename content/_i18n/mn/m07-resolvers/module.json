@@ -1,0 +1,5 @@
+{
+  "title": "Mongoose дээрх resolver-үүд",
+  "summary": "Resolver-ийн argument-уудыг гүнзгий, Mongoose object ба GraphQL type-ын хоорондох урхи, mutation, модульчлагдсан resolver бүтэц.",
+  "source": "ac70521a867a3a4f370db3f0d70030b14da635e3f1fdaafe4e461fcbc4904980"
+}

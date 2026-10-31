@@ -1,0 +1,7 @@
+{
+  "title": "Middleware, methods & aggregation",
+  "part": "Part I — Mongoose",
+  "stage": 1,
+  "summary": "Hooks and exactly when they fire, instance methods and statics, and the aggregation pipeline for reports and joins.",
+  "items": ["l1-hooks-methods", "l2-aggregation", "d1-slugs-softdelete", "d2-sales-report", "f5-passwords", "f5-numbers-stats", "l3-checkpoint"]
+}

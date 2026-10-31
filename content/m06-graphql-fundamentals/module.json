@@ -1,0 +1,7 @@
+{
+  "title": "GraphQL fundamentals",
+  "part": "Part II — GraphQL & Apollo Server",
+  "stage": 1,
+  "summary": "Operations, the type system and nullability, and how a query is actually executed — then you write the Taskforge schema.",
+  "items": ["l1-what-is-graphql", "l2-type-system", "l3-execution", "d1-write-operations", "d2-library-api", "f6-schema"]
+}

@@ -1,0 +1,5 @@
+{
+  "title": "Schema дизайн ба validation",
+  "summary": "Built-in болон custom validator-ууд, ValidationError-уудыг уншиж ойлгох, `unique` яагаад validator биш байдаг, subdocument болон array ашиглан data modeling хийх.",
+  "source": "bec175b54549624ec4e42cffe2ee7dd354fd47ed234a1cb817366b69605cd822"
+}

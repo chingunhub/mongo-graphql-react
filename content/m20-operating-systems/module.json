@@ -1,0 +1,7 @@
+{
+  "title": "Operate what you built",
+  "part": "Part V — Reliable delivery",
+  "stage": 3,
+  "summary": "Trace failures across boundaries, preserve pending work and expose useful operational state.",
+  "items": ["l1-observability", "d1-safe-event", "l2-recovery", "f20-dispatch"]
+}

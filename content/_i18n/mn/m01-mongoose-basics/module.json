@@ -1,0 +1,5 @@
+{
+  "title": "Mongoose-ийн үндэс",
+  "summary": "Document, collection, ObjectId. Дараа нь Schema → Model → Document, өгөгдөл үүсгэх, хайх, мөн Taskforge-ийн анхны model.",
+  "source": "aa8cb7a3273fc0e01d9a67a289f376d3ba7388200557850d116de9f62019ad24"
+}

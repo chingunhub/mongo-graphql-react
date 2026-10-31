@@ -1,0 +1,5 @@
+{
+  "title": "Query хийх ба update хийх",
+  "summary": "Operator-ууд, динамик filter-ууд, projection ба pagination; atomic update-ууд, race condition, мөн update validator-ын урхинууд.",
+  "source": "28476a5f437f20872731e737660356719f614bb3e356735ca6f2b519440fd114"
+}

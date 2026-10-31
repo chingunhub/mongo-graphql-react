@@ -1,0 +1,17 @@
+import { initTRPC } from '@trpc/server';
+import { z } from 'zod';
+import type { IModels } from '../../connectionResolvers';
+
+export type TRPCContext = { subdomain: string; models: IModels };
+
+const t = initTRPC.context<TRPCContext>().create();
+
+export const appRouter = t.router({
+  tickets: t.router({
+    count: t.procedure
+      .input(z.object({ priority: z.string().optional() }))
+      .query(({ ctx, input }) =>
+        ctx.models.Tickets.countDocuments(input.priority ? { priority: input.priority } : {}),
+      ),
+  }),
+});

@@ -1,0 +1,14 @@
+node_modules/
+runtime/
+release/
+data/
+.runs/
+dist/
+*.log
+
+.exports/
+.nx/
+
+# Plans, journals and handoff notes stay on the machine that wrote them.
+/PLAN.md
+/docs/

@@ -1,0 +1,33 @@
+{
+  "releaseUrl": "https://github.com/chingunhub/mongo-graphql-react/releases/latest/download",
+  "node": {
+    "version": "24.22.2",
+    "win-x64": {
+      "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-win-x64.zip",
+      "sha256": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"
+    },
+    "darwin-arm64": {
+      "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-arm64.tar.gz",
+      "sha256": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a"
+    },
+    "darwin-x64": {
+      "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-x64.tar.gz",
+      "sha256": "d5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52"
+    }
+  },
+  "mongodb": {
+    "version": "8.2.3",
+    "win-x64": {
+      "url": "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-8.2.3.zip",
+      "sha256": "7993f73ed85b470352bd48087c4007a18607806f2acca16c41966f11c8fa89c8"
+    },
+    "darwin-arm64": {
+      "url": "https://fastdl.mongodb.org/osx/mongodb-macos-arm64-8.2.3.tgz",
+      "sha256": "a9455021ea2dd8d3b475dac45b98c496ee87572aa2c136d1d52e8a3362c9c15f"
+    },
+    "darwin-x64": {
+      "url": "https://fastdl.mongodb.org/osx/mongodb-macos-x86_64-8.2.3.tgz",
+      "sha256": "da38cffaf3c072df9d7009fa4502caac3c80b0a4318f890bfb75e50d77d3d5c4"
+    }
+  }
+}

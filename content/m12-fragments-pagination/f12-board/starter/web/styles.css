@@ -1,0 +1,176 @@
+/* Provided: Taskforge's look. */
+:root {
+  --tf-bg: #f6f5f3;
+  --tf-panel: #ffffff;
+  --tf-line: #e4e1dc;
+  --tf-text: #1f1c19;
+  --tf-dim: #6e665e;
+  --tf-accent: #f97316;
+  color-scheme: light;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tf-bg: #141210;
+    --tf-panel: #1d1a17;
+    --tf-line: #332d27;
+    --tf-text: #eee8e1;
+    --tf-dim: #a39a90;
+    color-scheme: dark;
+  }
+}
+body {
+  margin: 0;
+  padding: 0 !important;
+  background: var(--tf-bg);
+  color: var(--tf-text);
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+.tf-pad {
+  padding: 24px;
+}
+.tf-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  background: var(--tf-panel);
+  border-bottom: 1px solid var(--tf-line);
+  flex-wrap: wrap;
+}
+.tf-tabs {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+.tf-tabs button,
+.tf-me button {
+  border: 1px solid var(--tf-line);
+  background: transparent;
+  color: var(--tf-text);
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.tf-tabs button.active {
+  border-color: var(--tf-accent);
+  color: var(--tf-accent);
+}
+.tf-me {
+  color: var(--tf-dim);
+  font-size: 14px;
+}
+.tf-main {
+  padding: 16px 20px 40px;
+}
+.tf-main form {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.tf-main form label {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--tf-dim);
+}
+.tf-main input,
+.tf-main select {
+  border: 1px solid var(--tf-line);
+  background: var(--tf-panel);
+  color: var(--tf-text);
+  border-radius: 7px;
+  padding: 6px 8px;
+}
+.tf-main button[type='submit'],
+.tf-load-more {
+  background: var(--tf-accent);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+.tf-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(200px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.tf-board > section {
+  background: color-mix(in srgb, var(--tf-panel) 60%, transparent);
+  border: 1px solid var(--tf-line);
+  border-radius: 12px;
+  padding: 10px;
+  min-height: 120px;
+}
+.tf-board h3 {
+  margin: 2px 4px 10px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--tf-dim);
+}
+.tf-board article {
+  background: var(--tf-panel);
+  border: 1px solid var(--tf-line);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  display: grid;
+  gap: 6px;
+}
+.tf-board article select {
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.tf-login {
+  max-width: 320px;
+  margin: 12vh auto;
+  display: grid;
+  gap: 12px;
+  background: var(--tf-panel);
+  border: 1px solid var(--tf-line);
+  border-radius: 14px;
+  padding: 24px;
+}
+.tf-login label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--tf-dim);
+}
+.tf-login input {
+  border: 1px solid var(--tf-line);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--tf-bg);
+  color: var(--tf-text);
+}
+.tf-login button {
+  background: var(--tf-accent);
+  border: 0;
+  color: #fff;
+  border-radius: 8px;
+  padding: 9px;
+  cursor: pointer;
+}
+.tf-hint {
+  font-size: 12px;
+  color: var(--tf-dim);
+  margin: 0;
+}
+@media (max-width: 900px) {
+  .tf-board {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "title": "GraphQL-ийн үндэс",
+  "summary": "Operation-ууд, type system ба nullability, query яг яаж execute хийгддэг. Дараа нь чи Taskforge-ийн schema-г бичнэ.",
+  "source": "4320731bcd420c7d574701cd90c2ad8e152c2483286eb8c2c3b625157782e236"
+}

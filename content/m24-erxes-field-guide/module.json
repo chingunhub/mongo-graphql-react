@@ -1,0 +1,19 @@
+{
+  "title": "Field guide: reading erxes",
+  "part": "Part VII — Into the real codebase",
+  "stage": 3,
+  "summary": "Learn the patterns erxes really uses, build a plugin in its shape, and debug an incident from nothing but the symptom.",
+  "items": [
+    "l1-plugin-anatomy",
+    "d1-model-class",
+    "l2-guards-and-messages",
+    "d2-guards",
+    "l3-subscriptions",
+    "d3-live-tickets",
+    "l4-frontend-stack",
+    "d4-ticket-board",
+    "d5-plugin",
+    "b1-incident",
+    "l5-first-week"
+  ]
+}

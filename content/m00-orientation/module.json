@@ -1,0 +1,7 @@
+{
+  "title": "Orientation",
+  "part": "Start here",
+  "stage": 1,
+  "summary": "The map of the whole stack, how this sandbox works, and a warm-up to get your hands on the editor.",
+  "items": ["l1-welcome", "l2-your-pace", "d1-warmup"]
+}

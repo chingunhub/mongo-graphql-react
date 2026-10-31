@@ -1,0 +1,7 @@
+{
+  "title": "Context, auth & errors",
+  "part": "Part II — GraphQL & Apollo Server",
+  "stage": 1,
+  "summary": "The per-request context, tokens and authentication, authorization at the right layer, and an error strategy clients can rely on.",
+  "items": ["l1-context-auth", "l2-errors", "d1-guarded-notes", "b1-whoever-came-last", "f8-auth"]
+}

@@ -1,0 +1,7 @@
+{
+  "title": "Deliver a plugin people can operate",
+  "part": "Part V — Reliable delivery",
+  "stage": 3,
+  "summary": "Connect a React console, generated contracts and a real HTTP system; prove recovery across the whole project.",
+  "items": ["l1-plugin-ui", "d1-plugin-loading", "f21-console", "l2-release", "f21-launch"]
+}

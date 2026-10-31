@@ -1,0 +1,7 @@
+{
+  "title": "Fragments & pagination",
+  "part": "Part III — Apollo Client & React",
+  "stage": 2,
+  "summary": "Colocated fragments as component data contracts, and paginated lists in the cache with fetchMore and field policies.",
+  "items": ["l1-fragments", "l2-client-pagination", "d1-load-more-feed", "f12-board"]
+}

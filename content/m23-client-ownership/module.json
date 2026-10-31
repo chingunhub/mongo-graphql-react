@@ -1,0 +1,7 @@
+{
+  "title": "Own the frontend and its contracts",
+  "part": "Part VI — Owning the system",
+  "stage": 3,
+  "summary": "Build the real React/Apollo client, connect three transports and make failure visible without leaking another identity's state.",
+  "items": ["l1-client-boundaries", "b1-client-identity", "f23-session", "l2-view-states", "f23-inbox", "l3-independent-change"]
+}

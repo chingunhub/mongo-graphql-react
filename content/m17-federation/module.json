@@ -1,0 +1,7 @@
+{
+  "title": "One graph, several owners",
+  "part": "Part IV — Connected systems",
+  "stage": 3,
+  "summary": "Compose real Apollo subgraphs and trace entity references without losing tenant identity.",
+  "items": ["l1-entities", "d1-warehouse", "l2-composition", "f17-subgraphs"]
+}

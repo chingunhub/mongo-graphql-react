@@ -1,0 +1,11 @@
+import { Ticket } from './services/tickets/model';
+import { Activity, processOpening } from './services/activity/worker';
+import { ingest } from './services/tickets/intake';
+import { buildContext } from './packages/contracts/context';
+import { dispatchPending, operationReport } from './services/operations';
+await Promise.all([Ticket.init(), Activity.init()]);
+const ctx = buildContext({ id: 'ada', memberships: { north: 'agent' } }, 'north', 'r1');
+await ingest(ctx, { sourceId: 'mail-1', subject: 'Help', contactId: 'c1' });
+console.log('before', await operationReport(ctx));
+console.log(await dispatchPending(ctx, processOpening));
+console.log('after', await operationReport(ctx));

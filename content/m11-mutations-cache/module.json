@@ -1,0 +1,7 @@
+{
+  "title": "Mutations & the cache",
+  "part": "Part III — Apollo Client & React",
+  "stage": 2,
+  "summary": "What the normalized cache actually stores, when it updates itself, and how to update it when it can't — refetch, cache.modify, optimistic UI.",
+  "items": ["l1-normalized-cache", "l2-cache-updates", "d1-comment-thread", "b1-board-that-lies", "f11-create-move"]
+}

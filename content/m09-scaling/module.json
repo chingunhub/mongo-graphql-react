@@ -1,0 +1,7 @@
+{
+  "title": "Scaling the API",
+  "part": "Part II — GraphQL & Apollo Server",
+  "stage": 1,
+  "summary": "Kill N+1 with DataLoader, paginate with cursors, use abstract types — and learn to find your way around a big GraphQL codebase.",
+  "items": ["l1-n-plus-one", "l2-pagination", "l3-architecture", "d1-batch-it", "d2-cursor-feed", "b1-wrong-bylines", "f9-loaders", "f9-connections", "l5-checkpoint", "l4-first-week"]
+}

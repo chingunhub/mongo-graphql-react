@@ -1,0 +1,3 @@
+type Contact { tenant: ID! id: ID! name: String! }
+type Ticket { id: ID! tenant: ID! subject: String! priority: String! version: Int! contact: Contact }
+type Query { contact(id: ID!): Contact tickets: [Ticket!]! }

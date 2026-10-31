@@ -1,0 +1,7 @@
+{
+  "title": "Schema design & validation",
+  "part": "Part I — Mongoose",
+  "stage": 1,
+  "summary": "Built-in and custom validators, reading ValidationErrors, why `unique` isn't a validator, and modeling with subdocuments and arrays.",
+  "items": ["l1-validation", "l2-subdocuments", "d1-event-tickets", "d2-playlist", "f2-projects-issues"]
+}

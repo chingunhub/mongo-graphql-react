@@ -1,0 +1,5 @@
+{
+  "title": "API-г scale хийх",
+  "summary": "DataLoader-оор N+1-ийг устгах, cursor-оор pagination хийх, abstract type ашиглах — мөн том GraphQL codebase-д замаа олохыг сурах.",
+  "source": "243b9f71910e062fe71ed62ae7a9c8133b95e384bc8379fa130b397ccdef9ad3"
+}

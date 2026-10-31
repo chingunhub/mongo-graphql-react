@@ -1,0 +1,5 @@
+{
+  "title": "Middleware, method-ууд & aggregation",
+  "summary": "Hook-ууд яг хэзээ ажилладаг, instance method-ууд ба static-ууд, мөн тайлан болон join-д зориулсан aggregation pipeline.",
+  "source": "618a11605e09ccf953c60811628c60b4e3ddda9c7bc46410e63f94febafca51e"
+}

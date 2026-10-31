@@ -1,0 +1,7 @@
+{
+  "title": "Work that survives a retry",
+  "part": "Part V — Reliable delivery",
+  "stage": 3,
+  "summary": "Understand BullMQ delivery semantics, bounded retries and durable idempotent effects.",
+  "items": ["l1-queues", "d1-retry-budget", "l2-idempotency", "b1-early-ack", "f19-worker"]
+}

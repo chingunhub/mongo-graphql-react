@@ -1,0 +1,8 @@
+import { ApolloServer } from '@apollo/server';
+import { typeDefs } from './schema';
+import { resolvers } from './resolvers';
+
+/** Builds (but does not start) the Taskforge GraphQL server. */
+export function createApolloServer(): ApolloServer {
+  return new ApolloServer({ typeDefs, resolvers });
+}

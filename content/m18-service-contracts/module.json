@@ -1,0 +1,7 @@
+{
+  "title": "Type-safe calls still cross a boundary",
+  "part": "Part V — Reliable delivery",
+  "stage": 3,
+  "summary": "Use tRPC and runtime validators while keeping tenant identity and concurrency rules intact.",
+  "items": ["l1-runtime-contracts", "d1-shipping", "l2-service-failures", "f18-triage"]
+}

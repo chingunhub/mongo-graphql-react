@@ -1,0 +1,14 @@
+{
+  "title": "Full-stack finale",
+  "part": "Finale",
+  "stage": 2,
+  "summary": "Boot the real server, ship a feature through every layer, then handle an incident and a brief on your own.",
+  "items": [
+    "l1-full-stack",
+    "f13-boot",
+    "f13-due-dates",
+    "l2-owning-it",
+    "b1-stale-names",
+    "d1-pin-issues"
+  ]
+}
