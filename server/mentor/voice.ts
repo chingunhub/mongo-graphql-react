@@ -8,6 +8,7 @@ import type { SidebandWS } from 'openai/resources/live/sideband/ws';
 import type { Response as OpenAIResponse } from 'openai/resources/responses/responses';
 import type { Item } from '../content.js';
 import { peekItem } from '../progress.js';
+import { addDelta, finalTurns, type SpokenTurn } from '../../shared/transcript.js';
 import { onActivity, type Activity } from './activity.js';
 import { itemContext, progressNote } from './context.js';
 import { MENTOR_INSTRUCTIONS, VOICE_BACKEND_NOTE, VOICE_INSTRUCTIONS } from './prompt.js';
@@ -19,7 +20,11 @@ import { runTool, toolSpecs, type MentorDeps, type ToolSpec } from './tools.js';
 const VOICE_MODEL = process.env.FORGE_MENTOR_VOICE_MODEL ?? 'gpt-live-1';
 const VOICE_USD_PER_MINUTE = 0.05;
 /** A hard stop per call while voice is a spike, so a forgotten call can't run up the bill. */
-const MAX_SECONDS = Number(process.env.FORGE_MENTOR_VOICE_MAX_SECONDS) || 600;
+const MAX_SECONDS = Number(process.env.FORGE_MENTOR_VOICE_MAX_SECONDS) || 3600;
+/** Each time a call's cost passes another step of this, the panel asks whether to keep going. */
+const SOFT_CAP_USD = Number(process.env.FORGE_MENTOR_VOICE_SOFT_CAP) || 2;
+/** No answer to that question this long ends the call. */
+const ASK_MS = Number(process.env.FORGE_MENTOR_VOICE_ASK_MS) || 60_000;
 const IDLE_MS = 5 * 60_000;
 /** The start `input` takes 8,192 tokens at most; about 3 characters a token keeps well under. */
 const INPUT_CHARS = 20_000;
@@ -35,11 +40,18 @@ const STUCK_MS = Number(process.env.FORGE_MENTOR_STUCK_MS) || 3 * 60_000;
 /** A nudge waits until nobody has spoken for this long, and the learner hasn't saved for SAVE_QUIET_MS. */
 const SPEECH_QUIET_MS = 4000;
 const SAVE_QUIET_MS = 8000;
-/** Saves to one file are summed up at most this often, so typing doesn't flood the call. */
-const SAVE_EVERY_MS = 10_000;
+/**
+ * The editor saves about once a second while the learner types. A note about saves goes out once
+ * they pause this long, so it describes the finished edit, not a half-typed line...
+ */
+const SAVE_PAUSE_MS = 1500;
+/** ...and no later than this after the first unsent save, for someone who types without pausing. */
+const SAVE_MAX_WAIT_MS = 5000;
 /** A context note may hold 500 tokens; this stays under it. */
 const NOTE_CHARS = 1400;
-const TICK_MS = 1000;
+const TICK_MS = 250;
+/** FORGE_MENTOR_VOICE_DEBUG=1 logs a timeline of each call (events and timings, never what was said). */
+const DEBUG = process.env.FORGE_MENTOR_VOICE_DEBUG === '1';
 
 /** What voice needs from the text mentor's routes. */
 export interface VoiceHost {
@@ -65,7 +77,7 @@ interface Call {
   /** Voice seconds billed so far: OpenAI sends running totals. */
   seconds: number;
   backendCost: number | null;
-  turns: { role: 'user' | 'assistant'; text: string }[];
+  turns: SpokenTurn[];
   /** One line per tool run, like the text chat's tool lines. */
   tools: string[];
   /** The tools the session has now; read_reference joins when the gate opens. */
@@ -78,6 +90,10 @@ interface Call {
   timer: ReturnType<typeof setInterval>;
   ctl: AbortController;
   saved: boolean;
+  /** The cost at which the panel next asks whether to keep going. */
+  capAt: number;
+  /** When the panel started asking; the learner's microphone is muted meanwhile. */
+  asking: number | null;
   // Following the learner (V1).
   /** The Nudges switch: off means the mentor only speaks when spoken to. */
   nudges: boolean;
@@ -85,7 +101,11 @@ interface Call {
   files: Record<string, string>;
   /** Files saved since the last note about saves, with their content before. */
   saveBase: Map<string, string>;
-  lastSaveNote: number;
+  /** When the oldest unsent save came in. */
+  saveSince: number;
+  /** For the debug timeline. */
+  started: number;
+  delegations: Map<string, number>;
   lastUser: number;
   lastMentor: number;
   lastSave: number;
@@ -110,8 +130,27 @@ const calls = new Map<string, Call>();
 const voiceCost = (c: Call) => (c.seconds / 60) * VOICE_USD_PER_MINUTE;
 const totalCost = (c: Call) => (c.backendCost === null ? null : voiceCost(c) + c.backendCost);
 
+/** Voice only: the mentor can't read code aloud, so it puts a snippet in the learner's panel. */
+const SHOW_CODE: ToolSpec = {
+  name: 'show_code',
+  description:
+    "Put a short code snippet in the learner's chat panel, where they can read and copy it. Voice can't show code, so use this whenever code would help: when the learner asks to see code or the syntax, or the help rung you're on calls for it. Keep it to the lines that matter, then say out loud where it goes. Never use it for the whole solution before the reference unlocks.",
+  parameters: {
+    type: 'object',
+    properties: {
+      code: { type: 'string', description: 'The code, at most about 30 lines.' },
+      path: { type: ['string', 'null'], description: 'The file it belongs in, like models/Recipe.ts, or null.' },
+      caption: { type: ['string', 'null'], description: 'One short line above the code, or null.' },
+    },
+    required: ['code', 'path', 'caption'],
+    additionalProperties: false,
+  },
+};
+const MAX_SNIPPET = 4000;
+const LANGS: Record<string, string> = { ts: 'ts', tsx: 'tsx', js: 'js', jsx: 'jsx', mjs: 'js', graphql: 'graphql', gql: 'graphql', json: 'json', css: 'css', html: 'html' };
+
 function delegationTools(item: Item) {
-  return toolSpecs(item).map((s: ToolSpec) => ({
+  return [...toolSpecs(item), SHOW_CODE].map((s: ToolSpec) => ({
     type: 'function' as const,
     name: s.name,
     description: s.description,
@@ -137,7 +176,7 @@ function startContext(host: VoiceHost, item: Item): string {
   return text;
 }
 
-function addSpeech(c: Call, role: 'user' | 'assistant', delta: string) {
+function addSpeech(c: Call, role: 'user' | 'assistant', delta: string, start?: number, end?: number) {
   const now = Date.now();
   c.lastSpeech = now;
   if (role === 'user') {
@@ -145,15 +184,41 @@ function addSpeech(c: Call, role: 'user' | 'assistant', delta: string) {
     c.lastActive = now;
     c.stuckNudged = false;
   } else c.lastMentor = now;
-  const last = c.turns.at(-1);
-  if (last?.role === role) last.text += delta;
-  else c.turns.push({ role, text: delta });
+  const before = c.turns.length;
+  addDelta(c.turns, role, delta, start, end);
+  if (c.turns.length > before) dbg(c, `${role === 'user' ? 'learner' : 'mentor'} speaking`);
+}
+
+/** show_code: the snippet joins the call's turns, so it lands in the thread where it was shown. */
+function showCode(c: Call, raw: string): { output: string; label: string } {
+  let args: { code?: unknown; path?: unknown; caption?: unknown };
+  try {
+    args = JSON.parse(raw || '{}');
+  } catch {
+    return { output: 'Error: the arguments were not valid JSON.', label: '' };
+  }
+  const code = typeof args.code === 'string' ? args.code.replace(/\s+$/, '') : '';
+  if (!code.trim()) return { output: 'Error: no code given.', label: '' };
+  if (code.length > MAX_SNIPPET) return { output: `Error: too long (${code.length} characters). Show only the lines that matter.`, label: '' };
+  const path = typeof args.path === 'string' ? args.path.trim() : '';
+  const caption = typeof args.caption === 'string' ? args.caption.trim() : '';
+  const lang = LANGS[path.split('.').pop() ?? ''] ?? 'ts';
+  const head = [caption, path ? `\`${path}\`` : ''].filter(Boolean).join(' · ');
+  const fence = '```';
+  c.turns.push({ role: 'assistant', kind: 'code', text: `${head ? head + '\n\n' : ''}${fence}${lang}\n${code}\n${fence}` });
+  return { output: 'Shown in the panel. Now tell the learner briefly where it goes; do not read it aloud.', label: path ? `Showed code for ${path}` : 'Showed code' };
 }
 
 async function runCall(host: VoiceHost, c: Call, item: { call_id: string; name: string; arguments: string }) {
+  const t0 = Date.now();
+  dbg(c, `tool ${item.name} called`);
   try {
-    const outcome = await runTool(host.deps, c.item, item.name, item.arguments ?? '{}', c.ctl.signal);
+    const outcome =
+      item.name === 'show_code'
+        ? showCode(c, item.arguments)
+        : await runTool(host.deps, c.item, item.name, item.arguments ?? '{}', c.ctl.signal);
     if (outcome.label) c.tools.push(outcome.label);
+    dbg(c, `tool ${item.name} done in ${Date.now() - t0} ms`);
     return { call_id: item.call_id, output: outcome.output };
   } catch (e) {
     return { call_id: item.call_id, output: `The tool failed: ${scrub((e as Error).message)}` };
@@ -177,12 +242,13 @@ async function answerCalls(c: Call, delegation: string) {
 function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unknown }) {
   switch (ev.type) {
     case 'session.input_transcript.delta':
-      return addSpeech(c, 'user', String(ev.delta ?? ''));
+      return addSpeech(c, 'user', String(ev.delta ?? ''), ev.start_ms as number, ev.end_ms as number);
     case 'session.output_transcript.delta':
-      return addSpeech(c, 'assistant', String(ev.delta ?? ''));
+      return addSpeech(c, 'assistant', String(ev.delta ?? ''), ev.start_ms as number, ev.end_ms as number);
     case 'session.usage.updated': {
       c.seconds = Math.max(c.seconds, Number((ev.usage as { seconds?: number })?.seconds ?? 0));
-      if (c.seconds >= MAX_SECONDS) void end(host, c, 'cap');
+      if (c.seconds >= MAX_SECONDS) void end(host, c, 'limit');
+      else checkCap(c);
       return;
     }
     case 'response.event': {
@@ -199,9 +265,12 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
         inner?.type === 'response.failed'
       ) {
         const usage = inner.response?.usage;
+        const since = c.delegations.get(delegation);
+        dbg(c, `backend ${inner.type.slice(9)}${since ? ` ${Date.now() - since} ms into the delegation` : ''}, ${usage?.input_tokens ?? '?'} in / ${usage?.output_tokens ?? '?'} out`);
         if (usage) {
           const cost = costOf(c.backend, usage);
           c.backendCost = cost === null || c.backendCost === null ? null : c.backendCost + cost;
+          checkCap(c);
         }
         if (inner.type === 'response.failed') {
           c.error = mentorError('other', scrub(inner.response?.error?.message ?? 'The backend model failed.'));
@@ -211,17 +280,43 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
       }
       return;
     }
+    case 'session.delegation.created': {
+      const d = ev.delegation as { id?: string } | undefined;
+      if (d?.id) c.delegations.set(d.id, Date.now());
+      dbg(c, 'delegation started');
+      return;
+    }
     case 'session.closed': {
       c.seconds = Math.max(c.seconds, Number((ev.usage as { seconds?: number })?.seconds ?? 0));
       return finish(host, c, String(ev.reason ?? 'closed'));
     }
     case 'error': {
-      const err = ev.error as { code?: string; message?: string } | undefined;
-      c.error = mentorError('other', scrub(`${err?.code ?? 'error'}: ${err?.message ?? ''}`));
-      console.warn('[mentor voice]', c.error.text);
+      c.error = callError(ev.error as { code?: string; message?: string } | undefined);
+      console.warn('[mentor voice]', c.error.code, c.error.text);
       return;
     }
   }
+}
+
+/** An error event from the call, in the panel's words where there are any. */
+function callError(err: { code?: string; message?: string } | undefined): MentorError {
+  const provider = 'OpenAI';
+  const code = err?.code ?? '';
+  if (/insufficient_quota|billing/.test(code))
+    return mentorError('noCredit', 'The OpenAI account is out of credit. Add some under Billing on platform.openai.com, then send again.', { provider, page: 'platform.openai.com' });
+  if (/invalid_api_key|unauthorized|authentication/.test(code)) return mentorError('badKey', 'OpenAI rejected the key.', { provider });
+  if (/rate_limit/.test(code)) return mentorError('rateLimit', 'OpenAI said slow down (429). Wait a minute and send again.', { provider });
+  if (/server_error|overloaded|unavailable/.test(code))
+    return mentorError('busy', 'OpenAI is busy or having trouble right now. Try again in a minute.', { provider });
+  return mentorError('other', scrub(`${code || 'error'}: ${err?.message ?? ''}`));
+}
+
+/** Past the next step of the soft cap: stop listening and let the panel ask whether to go on. */
+function checkCap(c: Call) {
+  const cost = c.backendCost === null ? voiceCost(c) : voiceCost(c) + c.backendCost;
+  if (c.ended || c.asking || cost < c.capAt) return;
+  c.asking = Date.now();
+  c.sideband.send({ type: 'session.input_audio.mute' });
 }
 
 /** The reference tool appears once the learner passes or submits 3 times, as in the text chat. */
@@ -233,12 +328,18 @@ function updateTools(c: Call) {
   c.sideband.send({ type: 'session.update', session: { delegation: { type: 'responses', responses: { tools: now } } } });
 }
 
+/** One line of the debug timeline: what happened when, never what was said. */
+function dbg(c: Call, what: string) {
+  if (DEBUG) console.log(`[voice ${c.id.slice(-6)} +${((Date.now() - c.started) / 1000).toFixed(1)}s] ${what}`);
+}
+
 /** Private context for the call: never spoken, it tells the mentor what the learner just did. */
 function note(c: Call, why: string, text: string) {
   if (c.ended) return;
   const content = text.length > NOTE_CHARS ? text.slice(0, NOTE_CHARS) + ' …' : text;
   c.sideband.send({ type: 'session.thinking.append', delegation_id: null, content: `Update: ${content}` });
   c.notes.push({ kind: 'context', why, at: Date.now() });
+  dbg(c, `note ${why} (${content.length} chars)`);
 }
 
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s);
@@ -247,27 +348,72 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s
 function describeSave(path: string, before: string, after: string): string {
   const a = before.split('\n');
   const b = after.split('\n');
+  const { added, removed } = changedLines(a, b);
+  const delta = b.length - a.length;
+  const size = delta ? ` (${delta > 0 ? '+' : ''}${delta} line${Math.abs(delta) === 1 ? '' : 's'})` : '';
+  if (!added.length) {
+    return removed ? `${path}: ${removed} line${removed === 1 ? '' : 's'} removed.` : `${path}: saved, no line changed.`;
+  }
+  // 1-based line numbers, as ranges: "5", "5-7, 28".
+  const ranges: string[] = [];
+  for (let i = 0; i < added.length; i++) {
+    let j = i;
+    while (j + 1 < added.length && added[j + 1] === added[j] + 1) j++;
+    ranges.push(j > i ? `${added[i] + 1}-${added[j] + 1}` : `${added[i] + 1}`);
+    i = j;
+  }
+  const where = added.length === 1 ? `line ${ranges[0]}` : `lines ${ranges.join(', ')}`;
+  const shown = added
+    .filter((i) => b[i].trim())
+    .slice(0, 6)
+    .map((i) => `line ${i + 1}: \`${clip(b[i].trim(), 120)}\``)
+    .join('; ');
+  const more = added.filter((i) => b[i].trim()).length > 6 ? ' …' : '';
+  return `${path}: ${where} changed${size}.${shown ? ' Now ' + shown + more + '.' : ''}`;
+}
+
+/**
+ * Which lines of `b` are new or changed compared with `a` (0-based), and how many of `a` went away.
+ * A plain longest-common-subsequence diff over the part between the unchanged top and bottom.
+ */
+function changedLines(a: string[], b: string[]): { added: number[]; removed: number } {
   let top = 0;
   while (top < a.length && top < b.length && a[top] === b[top]) top++;
   let end = 0;
   while (end < a.length - top && end < b.length - top && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
-  const from = top + 1;
-  const to = b.length - end;
-  const delta = b.length - a.length;
-  const where = to >= from ? (to > from ? `lines ${from}-${to}` : `line ${from}`) : `around line ${from}`;
-  const size = delta ? ` (${delta > 0 ? '+' : ''}${delta} line${Math.abs(delta) === 1 ? '' : 's'})` : '';
-  const shown = b
-    .slice(top, Math.min(to, top + 2))
-    .map((l, i) => `line ${from + i}: \`${clip(l.trim(), 120)}\``)
-    .join('; ');
-  return `${path}: ${where} changed${size}.${shown ? ' Now ' + shown + '.' : ''}`;
+  const A = a.slice(top, a.length - end);
+  const B = b.slice(top, b.length - end);
+  const n = A.length;
+  const m = B.length;
+  // A whole-file rewrite isn't worth a big table: call every line changed.
+  if (n * m > 4_000_000) return { added: B.map((_, j) => top + j), removed: n };
+  const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const added: number[] = [];
+  let removed = 0;
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) {
+      i++;
+      j++;
+    } else if (L[i + 1][j] >= L[i][j + 1]) {
+      removed++;
+      i++;
+    } else added.push(top + j++);
+  }
+  removed += n - i;
+  while (j < m) added.push(top + j++);
+  return { added, removed };
 }
 
 function flushSaves(c: Call) {
   if (!c.saveBase.size) return;
   const parts = [...c.saveBase].map(([path, before]) => describeSave(path, before, c.files[path] ?? ''));
+  dbg(c, `saves summed up ${Date.now() - c.saveSince} ms after the first, ${Date.now() - c.lastSave} ms after the last`);
   c.saveBase.clear();
-  c.lastSaveNote = Date.now();
   note(c, 'save', `The learner saved. ${parts.join(' ')}`);
 }
 
@@ -300,6 +446,8 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
     return;
   }
   if (a.item.key !== c.item.key) return;
+  // Anything else the learner does comes after their edits, so the edits go first.
+  if (a.type !== 'save') flushSaves(c);
   c.lastActive = now;
   c.stuckNudged = false;
   switch (a.type) {
@@ -307,11 +455,11 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
       c.lastSave = now;
       for (const [path, content] of Object.entries(a.files)) {
         if (typeof content !== 'string' || c.files[path] === content) continue;
+        if (!c.saveBase.size) c.saveSince = now;
         if (!c.saveBase.has(path)) c.saveBase.set(path, c.files[path] ?? '');
         c.files[path] = content;
       }
-      // The first save after a while goes out at once; the rest are summed up by the tick.
-      if (now - c.lastSaveNote >= SAVE_EVERY_MS) flushSaves(c);
+      // The tick sends the note once the learner pauses typing.
       return;
     }
     case 'run': {
@@ -375,8 +523,12 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
 /** Once a second: sums up saves, notices a stuck learner, and lets a waiting nudge out when it's quiet. */
 function tick(host: VoiceHost, c: Call) {
   const now = Date.now();
+  if (c.asking) {
+    if (now - c.asking > ASK_MS) void end(host, c, 'cap');
+    return;
+  }
   if (now - c.lastSpeech > IDLE_MS) return void end(host, c, 'idle');
-  if (c.saveBase.size && now - c.lastSaveNote >= SAVE_EVERY_MS) flushSaves(c);
+  if (c.saveBase.size && (now - c.lastSave >= SAVE_PAUSE_MS || now - c.saveSince >= SAVE_MAX_WAIT_MS)) flushSaves(c);
   // Stuck is the vaguest reason, so it never replaces a nudge that is already waiting.
   if (c.failing && !c.stuckNudged && !c.nudge && now - c.lastActive >= STUCK_MS) {
     c.stuckNudged = true;
@@ -387,6 +539,7 @@ function tick(host: VoiceHost, c: Call) {
   if (c.nudge && c.nudges && quiet && now - c.lastNudge >= NUDGE_GAP_MS) {
     c.sideband.send({ type: 'session.commentary.append', delegation_id: null, content: c.nudge.text });
     c.notes.push({ kind: 'nudge', why: c.nudge.why, at: now });
+    dbg(c, `nudge ${c.nudge.why}`);
     c.lastNudge = now;
     c.nudge = null;
     // The stuck clock starts again from a check-in.
@@ -407,9 +560,7 @@ function finish(host: VoiceHost, c: Call, reason: string) {
   }
   if (c.saved) return;
   c.saved = true;
-  const turns: DisplayMessage[] = c.turns
-    .filter((t) => t.text.trim())
-    .map((t) => ({ role: t.role, text: t.text.trim(), voice: true }));
+  const turns: DisplayMessage[] = finalTurns(c.turns).map((t) => ({ role: t.role, text: t.text.trim(), voice: true }));
   const last = [...turns].reverse().find((t) => t.role === 'assistant');
   if (last) {
     last.model = `${VOICE_MODEL} + ${c.backend}`;
@@ -446,10 +597,16 @@ function view(c: Call) {
     cost: totalCost(c),
     backend: c.backend,
     tools: c.tools,
+    /** Snippets shown so far, in order, for the panel during the call. */
+    codes: c.turns.filter((t) => t.kind === 'code').map((t) => t.text),
     ended: c.ended,
     error: c.error,
     nudges: c.nudges,
     notes: c.notes,
+    /** Set while the panel should ask whether to keep going: the cost it passed. */
+    capAsk: c.asking && !c.ended ? c.capAt : null,
+    capAt: c.capAt,
+    askSeconds: Math.round(ASK_MS / 1000),
   };
 }
 
@@ -526,10 +683,14 @@ export function mountVoice(app: Express, host: VoiceHost) {
       timer: setInterval(() => tick(host, c), TICK_MS),
       ctl: new AbortController(),
       saved: false,
+      capAt: SOFT_CAP_USD,
+      asking: null,
       nudges,
       files: item.kind === 'lesson' ? {} : { ...host.deps.taskFiles(item) },
       saveBase: new Map(),
-      lastSaveNote: 0,
+      saveSince: 0,
+      started: Date.now(),
+      delegations: new Map(),
       lastUser: 0,
       lastMentor: 0,
       lastSave: 0,
@@ -589,6 +750,19 @@ export function mountVoice(app: Express, host: VoiceHost) {
     if (!c) return fail(res, 404, mentorError('noCall', 'No such call.'));
     c.nudges = req.body?.on === true;
     if (!c.nudges) c.nudge = null;
+    res.json(view(c));
+  });
+
+  /** "Keep going" past the soft cap: listen again, and ask next at the following step. */
+  app.post('/api/mentor/voice/continue', (req, res) => {
+    const c = calls.get(String(req.body?.id ?? ''));
+    if (!c || c.ended) return fail(res, 404, mentorError('noCall', 'No such call.'));
+    if (c.asking) {
+      c.asking = null;
+      c.capAt += SOFT_CAP_USD;
+      c.lastSpeech = Date.now();
+      c.sideband.send({ type: 'session.input_audio.unmute' });
+    }
     res.json(view(c));
   });
 

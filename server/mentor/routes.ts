@@ -32,6 +32,8 @@ const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\-]{0,99}$/;
 const MAX_ROUNDS = 8;
 /** Characters, at about 3.5 per token: stays well under 200K input tokens, below any long-prompt price step. */
 const MAX_HISTORY_CHARS = 200_000 * 3.5;
+/** The most of a voice call's transcript passed to the text chat in one note. */
+const VOICE_NOTE_CHARS = 12_000;
 
 interface Thread {
   provider: ProviderId;
@@ -408,6 +410,18 @@ export function mountMentor(app: Express, deps: MentorDeps) {
     // so everything before it stays cached.
     const moved = !fresh && !!thread.lastItem && thread.lastItem !== itemKey;
     const note = progressNote(item);
+    // What was said in voice calls since the model last heard from this thread, so typing picks up
+    // where talking left off. The newest part is kept when it's long.
+    const heard = thread.display.filter((m) => m.voice && !m.fed);
+    let heardNote = '';
+    if (heard.length) {
+      const lines = heard.map((m) => `${m.role === 'user' ? 'Learner' : 'Mentor'}: ${m.text}`).join('\n');
+      heardNote =
+        'Update: since your last typed reply, the learner talked with you by voice. What was said, in order:\n' +
+        (lines.length > VOICE_NOTE_CHARS ? '…' + lines.slice(-VOICE_NOTE_CHARS) : lines);
+      for (const m of heard) m.fed = true;
+    }
+    const progress = moved || note !== thread.lastNote ? note : undefined;
     conv.addTurn({
       context: fresh
         ? itemContext(deps, item)
@@ -416,7 +430,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
             'the earlier messages stay for reference.\n\n' +
             itemContext(deps, item)
           : undefined,
-      note: moved || note !== thread.lastNote ? note : undefined,
+      note: [heardNote, progress].filter(Boolean).join('\n\n') || undefined,
       message,
       effort,
     });

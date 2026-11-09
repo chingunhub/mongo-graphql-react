@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { hasString, t, type StringKey } from '../i18n';
 import { Markdown } from './Markdown';
+import { addDelta, cleanSpeech, type SpokenTurn } from '../../../shared/transcript';
 
 type ProviderId = 'anthropic' | 'openai';
 type Step = { kind: 'thinking' | 'note' | 'tool'; text: string };
@@ -34,6 +35,13 @@ interface CallView {
   cost: number | null;
   backend: string;
   tools: string[];
+  /** Snippets the mentor put in the panel, in order. */
+  codes: string[];
+  /** Set while the call waits for "keep going?": the cost it passed. */
+  capAsk: number | null;
+  askSeconds: number;
+  /** The cost at which it asks next. */
+  capAt: number;
   ended: string | null;
   error: ServerError | null;
 }
@@ -41,7 +49,7 @@ interface Call {
   phase: 'connecting' | 'live' | 'ended';
   id?: string;
   /** What was said so far, from the call's data channel. Saved into the thread when it ends. */
-  turns: { role: 'user' | 'assistant'; text: string }[];
+  turns: SpokenTurn[];
   seconds: number;
   muted: boolean;
   view?: CallView;
@@ -68,8 +76,10 @@ function iceGathered(pc: RTCPeerConnection, ms = 3000) {
 function endedText(reason: string | undefined, maxSeconds = 600) {
   const min = Math.round(maxSeconds / 60);
   switch (reason) {
-    case 'cap':
+    case 'limit':
       return t('mentor.voice.endedCap', { min });
+    case 'cap':
+      return t('mentor.voice.endedNoAnswer');
     case 'idle':
       return t('mentor.voice.endedIdle');
     case 'expired':
@@ -437,7 +447,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
   };
   useEffect(() => {
     if (pinned.current) toBottom();
-  }, [messages, call?.turns, call?.view?.tools.length, call?.phase]);
+  }, [messages, call?.turns, call?.view?.tools.length, call?.view?.codes.length, call?.phase]);
   // Another thread, or back from the settings: start at the bottom.
   useEffect(() => {
     pinned.current = true;
@@ -640,12 +650,12 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     if (ev.type === 'session.input_transcript.delta' || ev.type === 'session.output_transcript.delta') {
       const role = ev.type === 'session.input_transcript.delta' ? 'user' : 'assistant';
       const delta = String(ev.delta ?? '');
+      const start = typeof ev.start_ms === 'number' ? ev.start_ms : undefined;
+      const end = typeof ev.end_ms === 'number' ? ev.end_ms : undefined;
       setCall((c) => {
         if (!c) return c;
-        const turns = [...c.turns];
-        const last = turns.at(-1);
-        if (last?.role === role) turns[turns.length - 1] = { role, text: last.text + delta };
-        else turns.push({ role, text: delta });
+        const turns = c.turns.map((tu) => ({ ...tu }));
+        addDelta(turns, role, delta, start, end);
         return { ...c, turns };
       });
     } else if (ev.type === 'session.started') {
@@ -670,7 +680,12 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
       });
     } catch (e) {
       const name = (e as Error).name;
-      const error = name === 'NotFoundError' ? t('mentor.voice.noMic') : t('mentor.voice.micBlocked');
+      const error =
+        name === 'NotFoundError'
+          ? t('mentor.voice.noMic')
+          : name === 'NotReadableError'
+            ? t('mentor.voice.micBusy')
+            : t('mentor.voice.micBlocked');
       setCall({ phase: 'ended', turns: [], seconds: 0, muted: false, error });
       return;
     }
@@ -680,6 +695,10 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     rtc.current = { pc, stream, audio };
     try {
       stream.getTracks().forEach((tr) => pc.addTrack(tr, stream));
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState !== 'failed' || rtc.current?.pc !== pc) return;
+        void endCall().then(() => setCall((c) => (c ? { ...c, error: t('mentor.voice.connectFailed') } : c)));
+      };
       pc.ontrack = (e) => {
         audio.srcObject = e.streams[0];
       };
@@ -753,6 +772,15 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     return () => clearInterval(tick);
   }, [call?.phase, call?.id, item?.key, item?.kind]);
 
+  async function keepGoing() {
+    const id = rtc.current?.id ?? call?.id;
+    if (!id) return;
+    const v = await json<CallView>('/api/mentor/voice/continue', { method: 'POST', body: JSON.stringify({ id }) }).catch(
+      () => null,
+    );
+    if (v) setCall((c) => (c ? { ...c, view: v } : c));
+  }
+
   function toggleMute() {
     const track = rtc.current?.stream.getAudioTracks()[0];
     if (!track) return;
@@ -772,7 +800,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
         },
         () => {},
       );
-    }, 2000);
+    }, 1000);
     return () => clearInterval(tick);
   }, [call?.id, call?.phase]);
 
@@ -920,15 +948,26 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
             })}
             {call && call.turns.length > 0 && (
               <>
-                {call.turns.map((tu, i) => (
-                  <div key={`call-${i}`} className="mentor-msg-wrap">
-                    <div className={'mentor-msg voice ' + tu.role}>
-                      <p>{tu.text}</p>
+                {call.turns.map((tu, i) =>
+                  cleanSpeech(tu.text) ? (
+                    <div key={`call-${i}`} className="mentor-msg-wrap">
+                      <div className={'mentor-msg voice ' + tu.role}>
+                        <p>{cleanSpeech(tu.text)}</p>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ) : null,
+                )}
               </>
             )}
+            {call && call.phase !== 'ended'
+              ? call.view?.codes.map((code, i) => (
+                  <div key={`code-${i}`} className="mentor-msg-wrap">
+                    <div className="mentor-msg assistant voice">
+                      <Markdown text={code} />
+                    </div>
+                  </div>
+                ))
+              : null}
             {call?.view?.tools.length ? (
               <div className="mentor-call-tools">
                 {call.view.tools.map((line, i) => (
@@ -973,6 +1012,20 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
                   </button>
                 )}
               </div>
+              {inCall && call.view?.capAsk != null && (
+                <div className="mentor-cap" role="alert">
+                  <b>{t('mentor.voice.capAsk', { cost: money(call.view.cost) })}</b>
+                  <small>{t('mentor.voice.capWait', { s: call.view.askSeconds })}</small>
+                  <div className="mentor-key-actions">
+                    <button className="btn primary small" onClick={() => void keepGoing()}>
+                      {t('mentor.voice.keepGoing')}
+                    </button>
+                    <button className="btn small" onClick={() => void endCall()}>
+                      {t('mentor.voice.end')}
+                    </button>
+                  </div>
+                </div>
+              )}
               {call.error && <p className="mentor-error">{call.error}</p>}
               {call.view?.error && <p className="mentor-error">{errorText(call.view.error)}</p>}
               {(call.view || call.seconds > 0) && (
@@ -987,7 +1040,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
               )}
               {inCall && (
                 <div className="mentor-foot">
-                  {t('mentor.voice.note')} {t('mentor.voice.limit', { min: Math.round((call.view?.maxSeconds ?? 600) / 60) })}
+                  {t('mentor.voice.note')} {t('mentor.voice.limit', { cap: `$${(call.view?.capAt ?? 2).toFixed(2)}` })}
                 </div>
               )}
             </div>

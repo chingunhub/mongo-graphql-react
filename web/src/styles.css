@@ -2148,3 +2148,16 @@ body.dragging-y * {
   color: var(--text-faint);
   cursor: pointer;
 }
+.mentor-cap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--forge);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.mentor-cap small {
+  color: var(--text-faint);
+  font-size: 12px;
+}

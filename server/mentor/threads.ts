@@ -26,6 +26,8 @@ export interface DisplayMessage {
   moved?: string;
   /** Said out loud in a voice call, not typed. */
   voice?: boolean;
+  /** On a voice turn: already passed on to the text chat's model. */
+  fed?: boolean;
 }
 
 export interface SavedThread {
