@@ -8,10 +8,10 @@ import type { SidebandWS } from 'openai/resources/live/sideband/ws';
 import type { Response as OpenAIResponse } from 'openai/resources/responses/responses';
 import type { Item } from '../content.js';
 import { peekItem } from '../progress.js';
-import { addDelta, finalTurns, type SpokenTurn } from '../../shared/transcript.js';
+import { addDelta, cleanSpeech, finalTurns, type SpokenTurn } from '../../shared/transcript.js';
 import { onActivity, type Activity } from './activity.js';
 import { itemContext, progressNote } from './context.js';
-import { MENTOR_INSTRUCTIONS, VOICE_BACKEND_NOTE, VOICE_INSTRUCTIONS } from './prompt.js';
+import { MENTOR_INSTRUCTIONS, REACT_INSTRUCTIONS, VOICE_BACKEND_NOTE, VOICE_INSTRUCTIONS } from './prompt.js';
 import { costOf, openaiProvider } from './providers/openai.js';
 import { mentorError, scrub, type Connection, type MentorError, type VoiceLink } from './providers/types.js';
 import type { DisplayMessage } from './threads.js';
@@ -50,8 +50,22 @@ const SAVE_MAX_WAIT_MS = 5000;
 /** A context note may hold 500 tokens; this stays under it. */
 const NOTE_CHARS = 1400;
 const TICK_MS = 250;
+/** At most one reaction to an edit this often. */
+const REACT_GAP_MS = Number(process.env.FORGE_MENTOR_REACT_GAP_MS) || 40_000;
+/** At most one glance this often, silent ones included; edits in between go into the next one. */
+const GLANCE_GAP_MS = Number(process.env.FORGE_MENTOR_GLANCE_GAP_MS) || 12_000;
+/** FORGE_MENTOR_VOICE_REACTIONS=0 turns reactions to edits off (nudges stay). */
+const REACTIONS = process.env.FORGE_MENTOR_VOICE_REACTIONS !== '0';
+/** A reaction is said only after this long with nobody speaking. */
+const REACT_QUIET_MS = 2500;
+/** No nudge this soon after a reaction, so the two don't pile up. */
+const NUDGE_AFTER_REACT_MS = 20_000;
+/** Whole files up to this size go to a glance; bigger ones only around the changes. */
+const LOOK_FILE_CHARS = 12_000;
 /** FORGE_MENTOR_VOICE_DEBUG=1 logs a timeline of each call (events and timings, never what was said). */
 const DEBUG = process.env.FORGE_MENTOR_VOICE_DEBUG === '1';
+/** FORGE_MENTOR_VOICE_TRACE=1, for experiments: every event type from OpenAI, errors, and what the mentor said. */
+const TRACE = process.env.FORGE_MENTOR_VOICE_TRACE === '1';
 
 /** What voice needs from the text mentor's routes. */
 export interface VoiceHost {
@@ -106,6 +120,23 @@ interface Call {
   /** For the debug timeline. */
   started: number;
   delegations: Map<string, number>;
+  /** Reactions to edits: the item context a glance starts from, and its state. */
+  lookContext: string;
+  looking: boolean;
+  lastReaction: number;
+  /** Counts saves, so a glance that a newer save overtook is dropped. */
+  saveSeq: number;
+  /** A backend response is under way; notes for the backend wait for it. */
+  backendBusy: boolean;
+  busySince: number;
+  backendQueue: string[];
+  /** File contents as of the last glance: the next one looks at everything changed since. */
+  lookBase: Record<string, string>;
+  /** A newer edit arrived during a glance: look again when it's done. */
+  lookAgain: boolean;
+  lastGlance: number;
+  /** A reaction waiting for a quiet moment. */
+  sayLater: { line: string; seq: number; until: number } | null;
   lastUser: number;
   lastMentor: number;
   lastSave: number;
@@ -122,7 +153,7 @@ interface Call {
   nudge: { why: string; text: string } | null;
   lastNudge: number;
   /** What was sent, for the panel and the tests: context notes and nudges, newest last. */
-  notes: { kind: 'context' | 'nudge'; why: string; at: number }[];
+  notes: { kind: 'context' | 'nudge' | 'reaction'; why: string; at: number }[];
 }
 
 const calls = new Map<string, Call>();
@@ -176,7 +207,19 @@ function startContext(host: VoiceHost, item: Item): string {
   return text;
 }
 
+/** The newest turn of this role that is speech, or undefined. */
+const lastSpoken = (c: Call, role: 'user' | 'assistant') =>
+  [...c.turns].reverse().find((t) => t.role === role && !t.kind);
+
 function addSpeech(c: Call, role: 'user' | 'assistant', delta: string, start?: number, end?: number) {
+  const before = c.turns.length;
+  const heard = cleanSpeech(lastSpoken(c, role)?.text ?? '');
+  addDelta(c.turns, role, delta, start, end);
+  // A microphone near a keyboard hears typing, which comes through as "[typing]" and the like.
+  // Only real words count as someone speaking.
+  const words = cleanSpeech(lastSpoken(c, role)?.text ?? '');
+  if (c.turns.length === before && words === heard) return;
+  if (c.turns.length > before && !cleanSpeech(delta)) return;
   const now = Date.now();
   c.lastSpeech = now;
   if (role === 'user') {
@@ -184,8 +227,6 @@ function addSpeech(c: Call, role: 'user' | 'assistant', delta: string, start?: n
     c.lastActive = now;
     c.stuckNudged = false;
   } else c.lastMentor = now;
-  const before = c.turns.length;
-  addDelta(c.turns, role, delta, start, end);
   if (c.turns.length > before) dbg(c, `${role === 'user' ? 'learner' : 'mentor'} speaking`);
 }
 
@@ -239,7 +280,23 @@ async function answerCalls(c: Call, delegation: string) {
   c.sideband.send({ type: 'response.create' });
 }
 
+function trace(c: Call, ev: { type: string; [k: string]: unknown }) {
+  if (!TRACE || ev.type === 'session.output_audio.delta' || ev.type === 'session.input_audio.append') return;
+  const inner = ev.type === 'response.event' ? ` > ${(ev.event as { type?: string })?.type}` : '';
+  const err = ev.type === 'error' ? ` ${scrub(JSON.stringify(ev.error))}` : '';
+  const innerEv = ev.event as { type?: string; text?: string } | undefined;
+  const said = ev.type.endsWith('transcript.delta')
+    ? ` "${String(ev.delta)}"`
+    : innerEv?.type === 'response.output_text.done'
+      ? ` backend wrote "${innerEv.text}"`
+      : '';
+  if (ev.type === 'response.event' && innerEv?.type?.includes('.delta')) return;
+  const ack = typeof ev.client_event_id === 'string' ? ` (ack ${ev.client_event_id})` : '';
+  console.log(`[trace ${c.id.slice(-6)} +${((Date.now() - c.started) / 1000).toFixed(1)}s] ${ev.type}${inner}${err}${said}${ack}`);
+}
+
 function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unknown }) {
+  trace(c, ev);
   switch (ev.type) {
     case 'session.input_transcript.delta':
       return addSpeech(c, 'user', String(ev.delta ?? ''), ev.start_ms as number, ev.end_ms as number);
@@ -254,6 +311,10 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
     case 'response.event': {
       const inner = ev.event as { type?: string; item?: Record<string, unknown>; response?: OpenAIResponse };
       const delegation = String(ev.delegation_id ?? 'session');
+      if (inner?.type === 'response.created') {
+        c.backendBusy = true;
+        c.busySince = Date.now();
+      }
       if (inner?.type === 'response.output_item.done' && inner.item?.type === 'function_call') {
         const call = inner.item as { call_id: string; name: string; arguments: string };
         const runs = c.pending.get(delegation) ?? [];
@@ -266,7 +327,7 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
       ) {
         const usage = inner.response?.usage;
         const since = c.delegations.get(delegation);
-        dbg(c, `backend ${inner.type.slice(9)}${since ? ` ${Date.now() - since} ms into the delegation` : ''}, ${usage?.input_tokens ?? '?'} in / ${usage?.output_tokens ?? '?'} out`);
+        dbg(c, `backend ${inner.type.slice(9)}${since ? ` ${Date.now() - since} ms into the delegation` : ''}, ${usage?.input_tokens ?? '?'} in (${usage?.input_tokens_details?.cached_tokens ?? 0} cached) / ${usage?.output_tokens ?? '?'} out`);
         if (usage) {
           const cost = costOf(c.backend, usage);
           c.backendCost = cost === null || c.backendCost === null ? null : c.backendCost + cost;
@@ -275,6 +336,11 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
         if (inner.type === 'response.failed') {
           c.error = mentorError('other', scrub(inner.response?.error?.message ?? 'The backend model failed.'));
           console.warn('[mentor voice] backend failed:', c.error.text);
+        }
+        // Done unless tool calls are waiting: their answers start the next response.
+        if (!c.pending.get(delegation)?.length) {
+          c.backendBusy = false;
+          for (const text of c.backendQueue.splice(0)) tellBackend(c, text);
         }
         void answerCalls(c, delegation);
       }
@@ -409,12 +475,151 @@ function changedLines(a: string[], b: string[]): { added: number[]; removed: num
   return { added, removed };
 }
 
+interface Edit {
+  path: string;
+  before: string;
+  after: string;
+}
+
+/** Lines of `after`, numbered, with changed ones marked *; only around the changes unless `whole`. */
+function marked(e: Edit, whole: boolean, max = 2500): string {
+  const b = e.after.split('\n');
+  const added = new Set(changedLines(e.before.split('\n'), b).added);
+  const keep = new Set<number>();
+  if (whole) b.forEach((_, i) => keep.add(i));
+  else for (const i of added) for (let k = Math.max(0, i - 2); k <= Math.min(b.length - 1, i + 2); k++) keep.add(k);
+  const lines: string[] = [];
+  let prev = -2;
+  for (const i of [...keep].sort((x, y) => x - y)) {
+    if (i !== prev + 1 && lines.length) lines.push('     …');
+    lines.push(`${String(i + 1).padStart(4)}${added.has(i) ? '*' : ' '} ${b[i]}`);
+    prev = i;
+  }
+  const text = lines.join('\n');
+  return text.length > max ? text.slice(0, max) + '\n     …' : text;
+}
+
 function flushSaves(c: Call) {
   if (!c.saveBase.size) return;
-  const parts = [...c.saveBase].map(([path, before]) => describeSave(path, before, c.files[path] ?? ''));
+  const edits: Edit[] = [...c.saveBase].map(([path, before]) => ({ path, before, after: c.files[path] ?? '' }));
+  const summary = edits.map((e) => describeSave(e.path, e.before, e.after)).join(' ');
   dbg(c, `saves summed up ${Date.now() - c.saveSince} ms after the first, ${Date.now() - c.lastSave} ms after the last`);
   c.saveBase.clear();
-  note(c, 'save', `The learner saved. ${parts.join(' ')}`);
+  note(c, 'save', `(background only, don't comment) The learner saved. ${summary}`);
+  // The backend gets the changed lines too, so a question about them needs no read_file round.
+  const shown = edits.map((e) => `${e.path} (changed lines marked *):\n${marked(e, false)}`);
+  tellBackend(c, `Update: the learner just saved.\n${shown.join('\n\n')}`);
+  void react(c);
+}
+
+/** A note for the backend's conversation. While it is answering, notes wait, so they never land mid-turn. */
+function tellBackend(c: Call, text: string, eventId?: string) {
+  if (c.ended) return;
+  if (c.backendBusy) return void c.backendQueue.push(text);
+  c.sideband.send({ type: 'response.item.create', event_id: eventId, item: { type: 'message', role: 'developer', content: text } });
+}
+
+/** Nobody has spoken for `ms`, and the backend isn't answering (a stuck flag expires after 20 s). */
+function quietFor(c: Call, ms: number, now = Date.now()) {
+  const busy = c.backendBusy && now - c.busySince < 20_000;
+  return now - c.lastUser >= ms && now - c.lastMentor >= ms && !busy;
+}
+
+/** Say a reaction now. */
+function sayReaction(c: Call, line: string) {
+  const t = Date.now();
+  c.sideband.send({ type: 'session.commentary.append', delegation_id: null, content: line });
+  c.lastReaction = t;
+  c.notes.push({ kind: 'reaction', why: 'edit', at: t });
+  dbg(c, 'reaction said');
+}
+
+/**
+ * A glance at what the learner changed since the last glance, outside the call: the backend says
+ * one short line or "(silent)", and the server has GPT-Live say the line when it's quiet.
+ * Off with the Nudges switch.
+ */
+async function react(c: Call, force = false) {
+  const now = Date.now();
+  if (!REACTIONS || !c.nudges || c.ended || c.asking) return;
+  if (c.looking) return void (c.lookAgain = true);
+  if (!force && (now - c.lastGlance < GLANCE_GAP_MS || now - c.lastReaction < REACT_GAP_MS || now - c.lastNudge < NUDGE_AFTER_REACT_MS)) {
+    // Not now: the tick looks at everything changed since, once the gaps allow.
+    return void (c.lookAgain = true);
+  }
+  const edits: Edit[] = Object.keys(c.files)
+    .filter((path) => (c.lookBase[path] ?? '') !== c.files[path])
+    .map((path) => ({ path, before: c.lookBase[path] ?? '', after: c.files[path] }));
+  // Blank lines and removals alone aren't worth a look.
+  const real = edits.filter((e) => {
+    const b = e.after.split('\n');
+    return changedLines(e.before.split('\n'), b).added.some((i) => b[i].trim());
+  });
+  c.lookAgain = false;
+  if (!real.length) return;
+  c.looking = true;
+  c.lastGlance = now;
+  const seq = c.saveSeq;
+  let overtaken = false;
+  try {
+    const spoken = finalTurns(c.turns)
+      .filter((t) => !t.kind)
+      .slice(-6)
+      .map((t) => `${t.role === 'user' ? 'Learner' : 'Mentor'}: ${t.text}`)
+      .join('\n');
+    const tests = c.failing
+      ? `Tests: failing, ${c.passed} passing. First failure: ${c.failing.name}`
+      : 'Tests: none failing, or not submitted yet.';
+    const summary = real.map((e) => describeSave(e.path, e.before, e.after)).join(' ');
+    const files = real.map(
+      (e) => `${e.path} now (lines changed since your last look marked *):\n${marked(e, e.after.length <= LOOK_FILE_CHARS, LOOK_FILE_CHARS)}`,
+    );
+    const resp = await c.link.look({
+      model: c.backend,
+      instructions: REACT_INSTRUCTIONS,
+      input: [
+        { role: 'developer', content: c.lookContext },
+        {
+          role: 'developer',
+          content: [tests, spoken ? `What was said lately:\n${spoken}` : '', `Changed since your last look: ${summary}`, ...files]
+            .filter(Boolean)
+            .join('\n\n'),
+        },
+      ],
+      reasoning: { effort: 'low' },
+      max_output_tokens: 800,
+      store: false,
+      prompt_cache_key: 'forge-voice-look:' + c.id,
+    });
+    const cost = costOf(c.backend, resp.usage);
+    c.backendCost = cost === null || c.backendCost === null ? null : c.backendCost + cost;
+    const line = (resp.output_text ?? '').trim();
+    const silent = !line || /^\(?silent\)?\.?$/i.test(line) || line.length > 220;
+    const u = resp.usage;
+    dbg(
+      c,
+      `glance in ${Date.now() - now} ms: ${silent ? 'silent' : 'has a line'}; ${u?.input_tokens ?? '?'} in (${u?.input_tokens_details?.cached_tokens ?? 0} cached) / ${u?.output_tokens ?? '?'} out, $${(cost ?? 0).toFixed(4)}`,
+    );
+    if (seq !== c.saveSeq) {
+      // The learner kept typing: this look is out of date. Look again at the newest code.
+      overtaken = true;
+      dbg(c, 'glance overtaken by a newer edit');
+      return;
+    }
+    for (const e of real) c.lookBase[e.path] = e.after;
+    if (silent || c.ended || c.asking || !c.nudges) return;
+    if (quietFor(c, REACT_QUIET_MS)) sayReaction(c, line);
+    else {
+      c.sayLater = { line, seq, until: Date.now() + 8000 };
+      dbg(c, 'reaction waits for a quiet moment');
+    }
+  } catch (e) {
+    dbg(c, `glance failed: ${scrub((e as Error).message)}`);
+  } finally {
+    c.looking = false;
+    // The tick looks again at the newest code once the glance gap allows.
+    if (overtaken) c.lookAgain = true;
+  }
 }
 
 function queueNudge(c: Call, why: string, text: string) {
@@ -428,7 +633,10 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
   if (a.type === 'open') {
     if (a.item.key === c.item.key) return;
     c.item = a.item;
+    c.lookContext = `${itemContext(host.deps, a.item)}\n\n${progressNote(a.item)}`;
     c.files = a.item.kind === 'lesson' ? {} : { ...host.deps.taskFiles(a.item) };
+    c.lookBase = { ...c.files };
+    c.sayLater = null;
     c.saveBase.clear();
     c.failing = null;
     c.passed = 0;
@@ -453,6 +661,7 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
   switch (a.type) {
     case 'save': {
       c.lastSave = now;
+      c.saveSeq++;
       for (const [path, content] of Object.entries(a.files)) {
         if (typeof content !== 'string' || c.files[path] === content) continue;
         if (!c.saveBase.size) c.saveSince = now;
@@ -529,6 +738,27 @@ function tick(host: VoiceHost, c: Call) {
   }
   if (now - c.lastSpeech > IDLE_MS) return void end(host, c, 'idle');
   if (c.saveBase.size && (now - c.lastSave >= SAVE_PAUSE_MS || now - c.saveSince >= SAVE_MAX_WAIT_MS)) flushSaves(c);
+  // A glance put off by a gap, or overtaken by an edit: once the gaps allow and typing has paused.
+  if (
+    c.lookAgain &&
+    !c.looking &&
+    now - c.lastSave >= SAVE_PAUSE_MS &&
+    now - c.lastGlance >= GLANCE_GAP_MS &&
+    now - c.lastReaction >= REACT_GAP_MS &&
+    now - c.lastNudge >= NUDGE_AFTER_REACT_MS
+  ) {
+    void react(c);
+  }
+  if (c.sayLater) {
+    const later = c.sayLater;
+    if (later.seq !== c.saveSeq || now > later.until || !c.nudges) {
+      c.sayLater = null;
+      dbg(c, `waiting reaction dropped: ${later.seq !== c.saveSeq ? 'newer edit' : 'no quiet moment'}`);
+    } else if (quietFor(c, REACT_QUIET_MS, now)) {
+      c.sayLater = null;
+      sayReaction(c, later.line);
+    }
+  }
   // Stuck is the vaguest reason, so it never replaces a nudge that is already waiting.
   if (c.failing && !c.stuckNudged && !c.nudge && now - c.lastActive >= STUCK_MS) {
     c.stuckNudged = true;
@@ -536,7 +766,7 @@ function tick(host: VoiceHost, c: Call) {
   }
   const quiet =
     now - c.lastUser >= SPEECH_QUIET_MS && now - c.lastMentor >= SPEECH_QUIET_MS && now - c.lastSave >= SAVE_QUIET_MS;
-  if (c.nudge && c.nudges && quiet && now - c.lastNudge >= NUDGE_GAP_MS) {
+  if (c.nudge && c.nudges && quiet && now - c.lastNudge >= NUDGE_GAP_MS && now - c.lastReaction >= NUDGE_AFTER_REACT_MS) {
     c.sideband.send({ type: 'session.commentary.append', delegation_id: null, content: c.nudge.text });
     c.notes.push({ kind: 'nudge', why: c.nudge.why, at: now });
     dbg(c, `nudge ${c.nudge.why}`);
@@ -691,6 +921,17 @@ export function mountVoice(app: Express, host: VoiceHost) {
       saveSince: 0,
       started: Date.now(),
       delegations: new Map(),
+      lookContext: context,
+      looking: false,
+      lastReaction: 0,
+      saveSeq: 0,
+      backendBusy: false,
+      busySince: 0,
+      backendQueue: [],
+      lookBase: {},
+      lookAgain: false,
+      lastGlance: 0,
+      sayLater: null,
       lastUser: 0,
       lastMentor: 0,
       lastSave: 0,
@@ -711,6 +952,7 @@ export function mountVoice(app: Express, host: VoiceHost) {
       c.failing = { name: 'an earlier submit' };
       c.passed = last.passed;
     }
+    c.lookBase = { ...c.files };
     calls.set(id, c);
     sideband.on('event', (ev) => onEvent(host, c, ev as { type: string }));
     sideband.on('error', (e) => {
@@ -745,6 +987,20 @@ export function mountVoice(app: Express, host: VoiceHost) {
   });
 
   /** The Nudges switch. Off drops any nudge still waiting. */
+  // Experiments only, with FORGE_MENTOR_VOICE_DEBUG=1: trigger server-side messages to the backend.
+  if (DEBUG) {
+    app.post('/api/mentor/voice/debug', (req, res) => {
+      const c = calls.get(String(req.body?.id ?? ''));
+      if (!c || c.ended) return fail(res, 404, mentorError('noCall', 'No such call.'));
+      const text = String(req.body?.text ?? '');
+      if (req.body?.op === 'tell') tellBackend(c, text, 'exp_tell');
+      else if (req.body?.op === 'react') void react(c, true);
+      else if (req.body?.op === 'commentary') c.sideband.send({ type: 'session.commentary.append', delegation_id: null, content: text, event_id: 'exp_comm' });
+      dbg(c, `debug ${req.body?.op}`);
+      res.json({ ok: true });
+    });
+  }
+
   app.post('/api/mentor/voice/nudges', (req, res) => {
     const c = calls.get(String(req.body?.id ?? ''));
     if (!c) return fail(res, 404, mentorError('noCall', 'No such call.'));

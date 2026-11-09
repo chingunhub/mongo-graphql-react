@@ -2,6 +2,7 @@
 // the stream to the browser; a provider owns its SDK, its request shape and its prices.
 import type { LiveCreateParams, LiveCreateResponse } from 'openai/resources/live/live';
 import type { SidebandWS } from 'openai/resources/live/sideband/ws';
+import type { Response as OpenAIResponse, ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 import type { ToolSpec } from '../tools.js';
 
 /** What happened on the way to an answer, in order: thinking summaries, progress notes, tool calls. */
@@ -78,6 +79,8 @@ export interface VoiceLink {
   /** The server's own connection to a running session: tool calls, transcripts, usage. */
   attach(sessionId: string): SidebandWS;
   hangup(sessionId: string): Promise<void>;
+  /** One short request outside the call, for a glance at the learner's edit. */
+  look(body: ResponseCreateParamsNonStreaming): Promise<OpenAIResponse>;
 }
 
 export interface MentorProvider {

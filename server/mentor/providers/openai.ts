@@ -214,6 +214,7 @@ export const openaiProvider: MentorProvider = {
         create: (body) => client.live.create(body, { timeout: 30_000 }),
         attach: (sessionId) => new SidebandWS(client, { session_id: sessionId }),
         hangup: (sessionId) => client.live.sessions.hangup(sessionId, { timeout: 10_000 }),
+        look: (body) => client.responses.create(body, { timeout: 20_000, maxRetries: 0 }),
       },
     };
   },
