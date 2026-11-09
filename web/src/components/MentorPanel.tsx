@@ -814,6 +814,16 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     [],
   );
 
+  // A reload or a closed tab can't run the cleanup above, so the page says goodbye on its way out.
+  useEffect(() => {
+    const bye = () => {
+      const id = rtc.current?.id;
+      if (id) navigator.sendBeacon('/api/mentor/voice/end', new Blob([JSON.stringify({ id })], { type: 'application/json' }));
+    };
+    window.addEventListener('pagehide', bye);
+    return () => window.removeEventListener('pagehide', bye);
+  }, []);
+
   const openaiKey = !!status?.providers.find((p) => p.id === 'openai')?.hasKey;
   const unknownCost = messages.some((m) => m.cost === null);
   const total = messages.reduce((s, m) => s + (m.cost ?? 0), 0);

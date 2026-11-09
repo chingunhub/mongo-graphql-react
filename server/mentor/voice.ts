@@ -92,6 +92,8 @@ interface Call {
   seconds: number;
   backendCost: number | null;
   turns: SpokenTurn[];
+  /** Where each item's part of the call starts in `turns`, so each part is saved with its item. */
+  parts: { item: Item; from: number }[];
   /** One line per tool run, like the text chat's tool lines. */
   tools: string[];
   /** The tools the session has now; read_reference joins when the gate opens. */
@@ -323,6 +325,7 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
       } else if (
         inner?.type === 'response.completed' ||
         inner?.type === 'response.incomplete' ||
+        inner?.type === 'response.cancelled' ||
         inner?.type === 'response.failed'
       ) {
         const usage = inner.response?.usage;
@@ -515,14 +518,25 @@ function flushSaves(c: Call) {
 /** A note for the backend's conversation. While it is answering, notes wait, so they never land mid-turn. */
 function tellBackend(c: Call, text: string, eventId?: string) {
   if (c.ended) return;
-  if (c.backendBusy) return void c.backendQueue.push(text);
-  c.sideband.send({ type: 'response.item.create', event_id: eventId, item: { type: 'message', role: 'developer', content: text } });
+  if (backendBusy(c)) return void c.backendQueue.push(text);
+  // Notes that waited behind a response that never reported its end go first.
+  for (const waiting of [...c.backendQueue.splice(0), text]) {
+    c.sideband.send({ type: 'response.item.create', event_id: eventId, item: { type: 'message', role: 'developer', content: waiting } });
+  }
 }
 
-/** Nobody has spoken for `ms`, and the backend isn't answering (a stuck flag expires after 20 s). */
+/**
+ * The backend is answering. A response the learner interrupts may never report its end, so the
+ * flag expires 20 s after the response started.
+ */
+function backendBusy(c: Call, now = Date.now()) {
+  if (c.backendBusy && now - c.busySince >= 20_000) c.backendBusy = false;
+  return c.backendBusy;
+}
+
+/** Nobody has spoken for `ms`, and the backend isn't answering. */
 function quietFor(c: Call, ms: number, now = Date.now()) {
-  const busy = c.backendBusy && now - c.busySince < 20_000;
-  return now - c.lastUser >= ms && now - c.lastMentor >= ms && !busy;
+  return now - c.lastUser >= ms && now - c.lastMentor >= ms && !backendBusy(c, now);
 }
 
 /** Say a reaction now. */
@@ -633,6 +647,7 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
   if (a.type === 'open') {
     if (a.item.key === c.item.key) return;
     c.item = a.item;
+    c.parts.push({ item: a.item, from: c.turns.length });
     c.lookContext = `${itemContext(host.deps, a.item)}\n\n${progressNote(a.item)}`;
     c.files = a.item.kind === 'lesson' ? {} : { ...host.deps.taskFiles(a.item) };
     c.lookBase = { ...c.files };
@@ -736,7 +751,8 @@ function tick(host: VoiceHost, c: Call) {
     if (now - c.asking > ASK_MS) void end(host, c, 'cap');
     return;
   }
-  if (now - c.lastSpeech > IDLE_MS) return void end(host, c, 'idle');
+  // Idle means nobody spoke and the learner did nothing in the app: quiet coding keeps the call.
+  if (now - Math.max(c.lastSpeech, c.lastActive) > IDLE_MS) return void end(host, c, 'idle');
   if (c.saveBase.size && (now - c.lastSave >= SAVE_PAUSE_MS || now - c.saveSince >= SAVE_MAX_WAIT_MS)) flushSaves(c);
   // A glance put off by a gap, or overtaken by an edit: once the gaps allow and typing has paused.
   if (
@@ -790,13 +806,25 @@ function finish(host: VoiceHost, c: Call, reason: string) {
   }
   if (c.saved) return;
   c.saved = true;
-  const turns: DisplayMessage[] = finalTurns(c.turns).map((t) => ({ role: t.role, text: t.text.trim(), voice: true }));
-  const last = [...turns].reverse().find((t) => t.role === 'assistant');
+  // Each item's part of the call goes into that item's thread. The call's cost sits on the last
+  // thing the mentor said.
+  const saved = c.parts
+    .map((p, i) => ({
+      item: p.item,
+      turns: finalTurns(c.turns.slice(p.from, c.parts[i + 1]?.from)).map(
+        (t): DisplayMessage => ({ role: t.role, text: t.text.trim(), voice: true }),
+      ),
+    }))
+    .filter((p) => p.turns.length);
+  const last = saved
+    .flatMap((p) => p.turns)
+    .reverse()
+    .find((t) => t.role === 'assistant');
   if (last) {
     last.model = `${VOICE_MODEL} + ${c.backend}`;
     last.cost = totalCost(c);
   }
-  if (turns.length) host.saveTurns(c.item, turns);
+  for (const p of saved) host.saveTurns(p.item, p.turns);
   host.spend(totalCost(c));
   setTimeout(() => calls.delete(c.id), KEEP_MS).unref();
 }
@@ -855,7 +883,8 @@ export function mountVoice(app: Express, host: VoiceHost) {
     if (!sdp.startsWith('v=0') || sdp.length > 50_000) return fail(res, 400, mentorError('badSdp', 'The browser sent a bad call offer.'));
     const link = host.openai()?.voice;
     if (!link) return fail(res, 400, mentorError('noVoiceKey', 'Voice needs an OpenAI key.'));
-    if ([...calls.values()].some((c) => !c.ended)) return fail(res, 409, mentorError('voiceBusy', 'A voice call is already running.'));
+    // One learner, one call: a call left behind by a reloaded or closed page is ended, not in the way.
+    for (const old of calls.values()) if (!old.ended) void end(host, old, 'replaced');
 
     const nudges = req.body?.nudges !== false;
     const backend = host.backendModel();
@@ -906,6 +935,7 @@ export function mountVoice(app: Express, host: VoiceHost) {
       seconds: 0,
       backendCost: 0,
       turns: [],
+      parts: [{ item, from: 0 }],
       tools: [],
       sentTools: tools.map((t) => t.name),
       pending: new Map(),
