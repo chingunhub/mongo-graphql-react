@@ -10,7 +10,7 @@ import {
   type TaskItem,
   type Item,
 } from './content.js';
-import { getProgress, itemProgress, peekItem, saveProgress, flush } from './progress.js';
+import { getProgress, itemProgress, peekItem, saveProgress, flush, solutionAvailable } from './progress.js';
 import { exportProgress } from './progress-export.js';
 import { applyReview, restReview, reviewSession, type ReviewOutcome } from './review.js';
 import { runJob, cleanupSandboxDbs, stopPrivateMongo, type Files } from './runner.js';
@@ -227,7 +227,7 @@ app.get('/api/items/:mod/:item', (req, res) => {
     needs: item.needs.map((key) => ({ key, title: curriculum().byKey.get(key)?.title ?? key })),
     attempts,
     lastResult: ip?.lastResult,
-    solutionAvailable: ip?.status === 'passed' || attempts >= 3,
+    solutionAvailable: solutionAvailable(ip),
     solutionRevealed: ip?.solutionRevealed ?? false,
   });
 });
@@ -291,7 +291,7 @@ app.post('/api/items/:mod/:item/submit', async (req, res) => {
     ...out,
     firstPass,
     attempts: ip.attempts,
-    solutionAvailable: out.ok || ip.attempts >= 3,
+    solutionAvailable: solutionAvailable(ip),
   });
 });
 
@@ -308,7 +308,7 @@ app.post('/api/items/:mod/:item/solution', (req, res) => {
   const task = asTask(req, res);
   if (!task) return;
   const ip = itemProgress(task.key);
-  if (!(ip.status === 'passed' || ip.attempts >= 3)) {
+  if (!solutionAvailable(ip)) {
     return void res.status(403).json({ error: 'Make at least 3 attempts first.' });
   }
   ip.solutionRevealed = true;

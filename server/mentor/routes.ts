@@ -18,7 +18,7 @@ import {
   type RoundUsage,
   type StepKind,
 } from './providers/types.js';
-import { runTool, type MentorDeps } from './tools.js';
+import { runTool, toolSpecs, type MentorDeps } from './tools.js';
 
 const PROVIDERS: Record<ProviderId, MentorProvider> = { anthropic: anthropicProvider, openai: openaiProvider };
 const ORDER: ProviderId[] = ['anthropic', 'openai'];
@@ -312,7 +312,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
           throw new Error('This conversation is too long. Start a new one to keep costs down.');
         }
         inFlight = true;
-        const { calls, usage } = await conv.round(sink, ctl.signal);
+        const { calls, usage } = await conv.round(sink, ctl.signal, toolSpecs(item));
         inFlight = false;
         count(usage);
         if (!calls.length) break;

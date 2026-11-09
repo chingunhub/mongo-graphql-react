@@ -10,6 +10,14 @@ export function languageName(): string {
   return LANGUAGE_NAMES[getProgress().settings.language ?? 'en'] ?? 'English';
 }
 
+/** Test names from the test files, for the item context. The test bodies stay out of it. */
+function testNames(tests: Record<string, string>): string[] {
+  const names: string[] = [];
+  const re = /\b(?:test|it)(?:\.only|\.skip)?\(\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;
+  for (const src of Object.values(tests)) for (const m of src.matchAll(re)) names.push(m[2]);
+  return names;
+}
+
 /** The block that opens a conversation. Fixed for the conversation, so it stays in the cached prefix. */
 export function itemContext(deps: MentorDeps, item: Item): string {
   const c = deps.curriculum();
@@ -35,6 +43,9 @@ export function itemContext(deps: MentorDeps, item: Item): string {
     '',
     '## Files',
     ...Object.keys(files).map((p) => `- ${p}${ro.has(p) ? ' (read-only)' : ''}${item.focus.includes(p) ? ' (focus)' : ''}`),
+    '',
+    '## Tests',
+    ...testNames(item.tests).map((n) => `- ${n}`),
     '',
     '## Authored hints (private guidance for you)',
     ...item.hints.map((h, i) => `${i + 1}. ${i < shownHints ? '[shown to the learner] ' : '[not shown] '}${h}`),

@@ -1,5 +1,6 @@
 // What the routes need from a model provider. The routes own the tool loop, the threads and
 // the stream to the browser; a provider owns its SDK, its request shape and its prices.
+import type { ToolSpec } from '../tools.js';
 
 /** What happened on the way to an answer, in order: thinking summaries, progress notes, tool calls. */
 export type StepKind = 'thinking' | 'note' | 'tool';
@@ -47,8 +48,11 @@ export interface Turn {
 export interface Conversation {
   readonly model: string;
   addTurn(turn: Turn): void;
-  /** One request: streams into the sink, appends the reply to the history, returns its tool calls. */
-  round(sink: Sink, signal: AbortSignal): Promise<RoundResult>;
+  /**
+   * One request: streams into the sink, appends the reply to the history, returns its tool calls.
+   * The tools come from the routes each round, since read_reference joins once the gate opens.
+   */
+  round(sink: Sink, signal: AbortSignal, tools: ToolSpec[]): Promise<RoundResult>;
   addToolResults(results: { id: string; output: string }[]): void;
   /** Rough size of the history in characters, for the input cap. */
   size(): number;

@@ -8,7 +8,7 @@ import type {
   Usage,
 } from '@anthropic-ai/sdk/resources/messages/messages';
 import { MENTOR_INSTRUCTIONS } from '../prompt.js';
-import { TOOL_SPECS } from '../tools.js';
+import type { ToolSpec } from '../tools.js';
 import {
   CutShort,
   scrub,
@@ -105,7 +105,7 @@ class AnthropicConversation implements Conversation {
     return JSON.stringify(this.messages).length;
   }
 
-  async round(sink: Sink, signal: AbortSignal): Promise<RoundResult> {
+  async round(sink: Sink, signal: AbortSignal, tools: ToolSpec[]): Promise<RoundResult> {
     const stream = this.client.messages.stream(
       {
         model: this.model,
@@ -114,7 +114,7 @@ class AnthropicConversation implements Conversation {
         // Also cache the conversation so far, up to its last block.
         cache_control: { type: 'ephemeral' },
         messages: this.messages,
-        tools: TOOL_SPECS.map((s) => ({
+        tools: tools.map((s) => ({
           name: s.name,
           description: s.description,
           input_schema: s.parameters as Anthropic.Tool['input_schema'],

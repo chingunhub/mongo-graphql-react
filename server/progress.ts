@@ -86,3 +86,11 @@ export function itemProgress(key: string): ItemProgress {
 export function peekItem(key: string): ItemProgress | undefined {
   return getProgress().items[key];
 }
+
+/**
+ * The one rule for the reference answer: open once the step has passed or after 3 submitted
+ * attempts. The Solution button and the mentor's read_reference tool both go through it.
+ */
+export function solutionAvailable(ip: ItemProgress | undefined): boolean {
+  return ip?.status === 'passed' || (ip?.attempts ?? 0) >= 3;
+}

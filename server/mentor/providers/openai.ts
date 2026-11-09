@@ -2,7 +2,7 @@
 import OpenAI from 'openai';
 import type { ResponseInputItem, Response as OpenAIResponse } from 'openai/resources/responses/responses';
 import { MENTOR_INSTRUCTIONS } from '../prompt.js';
-import { TOOL_SPECS } from '../tools.js';
+import type { ToolSpec } from '../tools.js';
 import {
   CutShort,
   scrub,
@@ -87,14 +87,14 @@ class OpenAIConversation implements Conversation {
     return JSON.stringify(this.input).length;
   }
 
-  async round(sink: Sink, signal: AbortSignal): Promise<RoundResult> {
+  async round(sink: Sink, signal: AbortSignal, tools: ToolSpec[]): Promise<RoundResult> {
     const request = () =>
       this.client.responses.create(
         {
           model: this.model,
           instructions: MENTOR_INSTRUCTIONS,
           input: this.input,
-          tools: TOOL_SPECS.map((s) => ({ type: 'function' as const, strict: true, ...s })),
+          tools: tools.map((s) => ({ type: 'function' as const, strict: true, ...s })),
           tool_choice: 'auto',
           reasoning: {
             effort: this.baseEffort as (typeof EFFORTS)[number],
