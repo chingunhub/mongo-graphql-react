@@ -32,6 +32,7 @@ import { workspaceFiles, workspaceStatus, relaydeskLaunch } from './workspaces.j
 import { relaydeskSource } from './relaydesk-source.js';
 import { finaleFiles, taskforgeLaunch, taskforgePassedRun, taskforgeSource } from './taskforge-source.js';
 import { exportRelaydesk } from './relaydesk-export.js';
+import { mountMentor } from './mentor/routes.js';
 import {
   relaydeskInfo,
   startRelaydeskPreview,
@@ -540,6 +541,10 @@ app.post('/api/shutdown', (_req, res) => {
   res.json({ ok: true });
   setTimeout(() => shutdown(), 100);
 });
+
+// ---------- AI mentor (spike) ----------
+
+mountMentor(app, { curriculum, taskFiles, readonlyPaths });
 
 // ---------- web UI ----------
 

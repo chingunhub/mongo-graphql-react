@@ -13,6 +13,7 @@ import { useReferenceStatus } from './components/useReference';
 import { allowUnload } from './unloadGuard';
 import { setLanguage } from './i18n';
 import { Splitter, usePaneSize } from './components/Splitter';
+import { MentorPanel } from './components/MentorPanel';
 
 interface Ctx {
   data: CurriculumData | null;
@@ -62,6 +63,7 @@ export function App() {
   useEffect(() => setCollapsed(null), [onTask]);
   const { theme, next: nextTheme } = useTheme();
   const [sidebarW, setSidebarW] = usePaneSize('sidebar', { min: 200, max: 520 });
+  const [mentorOpen, setMentorOpen] = useState(false);
   const ref = useReferenceStatus();
 
   const refresh = useCallback(async () => {
@@ -101,6 +103,9 @@ export function App() {
 
   let page: React.ReactNode = null;
   const m = path.match(/^\/learn\/(m\d\d)\/([^/]+)/);
+  const openItem = m && data ? ctx.find(`${m[1]}/${m[2]}`) : undefined;
+  const itemKey = openItem ? openItem.item.key : null;
+  const itemKind = openItem ? (openItem.item.kind === 'lesson' ? 'lesson' : 'task') : null;
   if (path === '/' || path === '') page = <Home />;
   else if (path.startsWith('/taskforge')) page = <TaskforgePage />;
   else if (path.startsWith('/relaydesk')) page = <RelaydeskPage />;
@@ -186,6 +191,13 @@ export function App() {
               {done}/{total}
             </div>
           )}
+          <button
+            className={'icon-btn' + (mentorOpen ? ' active' : '')}
+            onClick={() => setMentorOpen((o) => !o)}
+            title="Chat with the AI mentor about the open item"
+          >
+            Mentor
+          </button>
           <button className="icon-btn" onClick={nextTheme} title="Theme: auto → dark → light">
             {theme === 'auto' ? '◐' : theme === 'dark' ? '☾' : '☀'}
           </button>
@@ -207,6 +219,7 @@ export function App() {
           )}
           {page}
         </main>
+        {mentorOpen && <MentorPanel itemKey={itemKey} itemKind={itemKind} onClose={() => setMentorOpen(false)} />}
       </div>
     </CurriculumContext.Provider>
   );
