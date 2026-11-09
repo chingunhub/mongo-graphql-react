@@ -304,12 +304,16 @@ export function mountMentor(app: Express, deps: MentorDeps) {
       send({ type: 'usage', ...u, cost: reply.cost });
     };
 
+    /** A request is under way. Stopping it still bills the tokens so far, which no one reports. */
+    let inFlight = false;
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
         if (conv.size() > MAX_HISTORY_CHARS) {
           throw new Error('This conversation is too long. Start a new one to keep costs down.');
         }
+        inFlight = true;
         const { calls, usage } = await conv.round(sink, ctl.signal);
+        inFlight = false;
         count(usage);
         if (!calls.length) break;
         // Every call gets an answer, even when stopped, or the next request is rejected.
@@ -329,6 +333,10 @@ export function mountMentor(app: Express, deps: MentorDeps) {
       send({ type: 'done' });
     } catch (e) {
       if (e instanceof CutShort) count(e.usage);
+      else if (inFlight && ctl.signal.aborted && reply.cost !== null) {
+        reply.cost = null;
+        send({ type: 'usage', cost: null });
+      }
       const msg = ctl.signal.aborted ? 'Stopped.' : p.friendly(e, model);
       reply.error = msg;
       if (!ctl.signal.aborted) console.error('[mentor]', scrub(e instanceof Error ? e.message : String(e)));

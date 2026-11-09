@@ -53,6 +53,10 @@ class OpenAIConversation implements Conversation {
   private baseEffort: string | null = null;
   /** Effort in force, changed with configuration_update items. */
   private effort: string | null = null;
+  /** True once a request in this thread has gone through. Until then the base effort can still change. */
+  private answered = false;
+  /** This turn's effort change, undone if the model refuses it. */
+  private change: { at: number; before: string | null } | null = null;
 
   constructor(
     private client: OpenAI,
@@ -65,8 +69,10 @@ class OpenAIConversation implements Conversation {
     if (note) this.input.push({ role: 'developer', content: note });
     // The first message fixes the thread's request-level effort; later changes ride in the input
     // as configuration_update items, which keeps everything before them cached.
-    if (!this.baseEffort) this.baseEffort = this.effort = effort;
+    this.change = null;
+    if (!this.answered) this.baseEffort = this.effort = effort;
     else if (effort !== this.effort) {
+      this.change = { at: this.input.length, before: this.effort };
       this.input.push({ type: 'configuration_update', reasoning: { effort: effort as (typeof EFFORTS)[number] } });
       this.effort = effort;
     }
@@ -108,7 +114,15 @@ class OpenAIConversation implements Conversation {
     } catch (e) {
       const refusedSummary =
         summaries && e instanceof OpenAI.APIError && e.status === 400 && /summar|verif/i.test(e.message);
-      if (!refusedSummary) throw e;
+      if (!refusedSummary) {
+        // A refused effort (some models skip "none") must not stick to the thread.
+        if (e instanceof OpenAI.BadRequestError && this.change) {
+          this.input.splice(this.change.at, 1);
+          this.effort = this.change.before;
+          this.change = null;
+        }
+        throw e;
+      }
       summaries = false;
       console.warn('[mentor] reasoning summaries refused for this key; continuing without them');
       stream = await request();
@@ -135,6 +149,8 @@ class OpenAIConversation implements Conversation {
       }
     }
     if (!final) throw new Error('The stream ended without a response.');
+    this.answered = true;
+    this.change = null;
     this.input.push(...(final.output as unknown as ResponseInputItem[]));
     const calls = final.output.filter((o) => o.type === 'function_call');
     const usage = {
@@ -184,6 +200,8 @@ export const openaiProvider: MentorProvider = {
     if (e instanceof OpenAI.APIUserAbortError) return 'Stopped.';
     if (e instanceof OpenAI.APIConnectionError) return "Couldn't reach OpenAI. Check the internet connection.";
     if (e instanceof OpenAI.APIError) {
+      if (e.status === 400 && /effort/.test(e.param ?? ''))
+        return `${model ?? 'This model'} doesn't take that reasoning effort. Pick another one and send again.`;
       if (e.status === 401) return 'OpenAI rejected the key.';
       if (e.status === 403) return `This key isn't allowed to use ${model ?? 'that model'}.`;
       if (e.status === 404) return `OpenAI doesn't offer ${model ?? 'that model'} to this key.`;

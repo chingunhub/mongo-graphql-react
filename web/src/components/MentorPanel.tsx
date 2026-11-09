@@ -384,6 +384,7 @@ export function MentorPanel({
             });
           else if (ev.type === 'usage') {
             patchLast((m) => ({ ...m, cost: ev.cost }));
+            if (ev.input === undefined) continue;
             const pct = ev.input ? Math.round(((ev.cached ?? 0) / ev.input) * 100) : 0;
             setUsage(
               `last request: ${ev.input ?? 0} in, ${pct}% cached, ${ev.output ?? 0} out` +
@@ -394,8 +395,9 @@ export function MentorPanel({
         }
       }
     } catch (e) {
-      const msg = (e as Error).name === 'AbortError' ? 'Stopped.' : (e as Error).message;
-      patchLast((m) => ({ ...m, error: msg }));
+      const stopped = (e as Error).name === 'AbortError';
+      // A stopped request is still billed for what it produced, and no one reports how much.
+      patchLast((m) => ({ ...m, error: stopped ? 'Stopped.' : (e as Error).message, ...(stopped ? { cost: null } : {}) }));
     } finally {
       abortRef.current = null;
       setBusy(false);
