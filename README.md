@@ -76,6 +76,15 @@ It's off until you add your own API key from [OpenAI](https://platform.openai.co
 - **Conversations** are kept in `data/mentor` on your computer. They're left out of the progress export, and you can delete them from the settings.
 - **Cost** goes to your own account. With GPT-6.1 Terra, the first message about an item cost 0.3–0.7¢ in our tests and a follow-up under 0.2¢. The panel shows what the session has cost so far.
 
+### Talking to it (OpenAI key only)
+
+With an OpenAI key, **🎙 Talk** in the mentor panel starts a voice call, like having an instructor beside you. It follows what you do while you work: what you save, your test results, the hints you open, the part of a lesson you're reading. Now and then it speaks up on its own, with a short word about an edit or a check-in when the same test keeps failing. The **Nudges** switch turns that off, so it only answers. When code would help, it puts a snippet in the chat panel instead of reading it out. What was said is kept with the chat, so you can carry on by typing.
+
+- **Voice is English only**, even with the Mongolian interface. No voice model handles Mongolian well enough yet.
+- **Use headphones.** Through laptop speakers the mentor hears itself.
+- **What's sent**: your microphone audio goes straight from the browser to OpenAI during the call. The same item details as the chat go through the app, which still keeps your key to itself.
+- **Cost**: voice is $0.05 a minute, plus a little for the model that does the thinking. Calls in our tests came to about 5–10¢ a minute. The call bar shows the running cost, and at $2 the call stops listening and asks whether to keep going.
+
 ## Good to know
 
 The sandbox runs your code as a normal program with your own permissions. That's fine for your own code on your own computer, and it's why the course isn't hosted. Don't paste in code you don't trust.
