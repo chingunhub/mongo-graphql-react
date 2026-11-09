@@ -380,6 +380,8 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
   const [call, setCall] = useState<Call | null>(null);
   const rtc = useRef<{ pc: RTCPeerConnection; stream: MediaStream; audio: HTMLAudioElement; id?: string } | null>(null);
   const inCall = !!call && call.phase !== 'ended';
+  /** The Nudges switch: on, the mentor may speak up when the learner seems stuck. */
+  const [nudgesOn, setNudgesOn] = useState(() => stored('forge-mentor-nudges') !== 'off');
   const locked = busy || inCall;
 
   const loadStatus = () => json<Status>('/api/mentor/status').then(setStatus, () => setFailed(true));
@@ -694,7 +696,12 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
       await iceGathered(pc);
       const r = await json<{ id: string; sdp: string }>('/api/mentor/voice/session', {
         method: 'POST',
-        body: JSON.stringify({ itemKey: item.key, sdp: pc.localDescription?.sdp, effort: efforts.openai ?? 'medium' }),
+        body: JSON.stringify({
+          itemKey: item.key,
+          sdp: pc.localDescription?.sdp,
+          effort: efforts.openai ?? 'medium',
+          nudges: nudgesOn,
+        }),
       });
       if (rtc.current) rtc.current.id = r.id;
       setCall((c) => (c ? { ...c, id: r.id } : c));
@@ -717,6 +724,34 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     setCall((c) => (c ? { ...c, view: v ?? c.view, reason: 'close_requested' } : c));
     callEnded('close_requested');
   }
+
+  function toggleNudges(on: boolean) {
+    setNudgesOn(on);
+    store('forge-mentor-nudges', on ? 'on' : 'off');
+    const id = rtc.current?.id;
+    if (id) void json('/api/mentor/voice/nudges', { method: 'POST', body: JSON.stringify({ id, on }) }).catch(() => {});
+  }
+
+  // In a lesson, the call hears which section the learner is reading.
+  useEffect(() => {
+    if (call?.phase !== 'live' || !call.id || item?.kind !== 'lesson') return;
+    const id = call.id;
+    let last = '';
+    const look = () => {
+      const heads = [...document.querySelectorAll<HTMLElement>('.lesson-page h1, .lesson-page h2, .lesson-page h3')];
+      const line = window.innerHeight * 0.35;
+      const here = heads.filter((h) => h.getBoundingClientRect().top < line).at(-1) ?? heads[0];
+      const heading = here?.textContent?.trim() ?? '';
+      if (!heading || heading === last) return;
+      last = heading;
+      void json('/api/mentor/voice/event', { method: 'POST', body: JSON.stringify({ id, type: 'section', heading }) }).catch(
+        () => {},
+      );
+    };
+    look();
+    const tick = setInterval(look, 1500);
+    return () => clearInterval(tick);
+  }, [call?.phase, call?.id, item?.key, item?.kind]);
 
   function toggleMute() {
     const track = rtc.current?.stream.getAudioTracks()[0];
@@ -920,6 +955,10 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
                 <div className="spacer" />
                 {inCall && (
                   <>
+                    <label className="mentor-nudges" title={t('mentor.voice.nudgesTitle')}>
+                      <input type="checkbox" checked={nudgesOn} onChange={(e) => toggleNudges(e.target.checked)} />
+                      {t('mentor.voice.nudges')}
+                    </label>
                     <button className="btn small" onClick={toggleMute} disabled={call.phase !== 'live'}>
                       {call.muted ? t('mentor.voice.unmute') : t('mentor.voice.mute')}
                     </button>

@@ -2140,3 +2140,11 @@ body.dragging-y * {
 .mentor-call .mentor-foot {
   padding: 0;
 }
+.mentor-nudges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+}

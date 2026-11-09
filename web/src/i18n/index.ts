@@ -220,6 +220,8 @@ const en = {
   'mentor.voice.micBlocked': 'The microphone is blocked. Allow it for this page and try again.',
   'mentor.voice.noMic': 'No microphone found.',
   'mentor.voice.said': 'said out loud',
+  'mentor.voice.nudges': 'Nudges',
+  'mentor.voice.nudgesTitle': 'On: the mentor may speak up when you seem stuck, at most every 3 minutes. Off: it only answers.',
 };
 
 export type StringKey = keyof typeof en;
@@ -447,6 +449,8 @@ const mn: Partial<Record<StringKey, string>> = {
   'mentor.voice.micBlocked': 'Микрофон хаалттай байна. Энэ хуудсанд зөвшөөрөл өгөөд дахин оролд.',
   'mentor.voice.noMic': 'Микрофон олдсонгүй.',
   'mentor.voice.said': 'дуугаар хэлсэн',
+  'mentor.voice.nudges': 'Сануулга',
+  'mentor.voice.nudgesTitle': 'Асаалттай үед чамайг гацсан бололтой бол ментор өөрөө дуугарч магадгүй, 3 минутад нэгээс илүүгүй. Унтраалттай үед зөвхөн асуухад хариулна.',
 };
 
 let language: Language = 'en';

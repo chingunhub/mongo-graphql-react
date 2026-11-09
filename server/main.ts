@@ -33,6 +33,7 @@ import { relaydeskSource } from './relaydesk-source.js';
 import { finaleFiles, taskforgeLaunch, taskforgePassedRun, taskforgeSource } from './taskforge-source.js';
 import { exportRelaydesk } from './relaydesk-export.js';
 import { mountMentor } from './mentor/routes.js';
+import { emitActivity } from './mentor/activity.js';
 import {
   relaydeskInfo,
   startRelaydeskPreview,
@@ -207,8 +208,10 @@ app.get('/api/items/:mod/:item', (req, res) => {
   const item = getItem(req);
   if (!item) return void res.status(404).json({ error: 'Not found' });
   const p = getProgress();
+  const moved = p.lastVisited !== item.key;
   p.lastVisited = item.key;
   saveProgress();
+  if (moved) emitActivity({ type: 'open', item });
   if (item.kind === 'lesson') {
     return void res.json({ ...itemSummary(item), body: item.body });
   }
@@ -244,6 +247,7 @@ app.post('/api/items/:mod/:item/save', (req, res) => {
   const task = asTask(req, res);
   if (!task) return;
   saveFiles(task, req.body.files ?? {});
+  emitActivity({ type: 'save', item: task, files: req.body.files ?? {} });
   res.json({ ok: true });
 });
 
@@ -260,6 +264,7 @@ app.post('/api/items/:mod/:item/run', async (req, res) => {
     db: task.db,
     entry,
   });
+  emitActivity({ type: 'run', item: task, out });
   res.json(out);
 });
 
@@ -287,6 +292,7 @@ app.post('/api/items/:mod/:item/submit', async (req, res) => {
     ip.passedAt ??= new Date().toISOString();
   }
   saveProgress();
+  emitActivity({ type: 'submit', item: task, out, attempts: ip.attempts });
   res.json({
     ...out,
     firstPass,
@@ -301,6 +307,7 @@ app.post('/api/items/:mod/:item/hint', (req, res) => {
   const ip = itemProgress(task.key);
   ip.hintsShown = Math.min(task.hints.length, ip.hintsShown + 1);
   saveProgress();
+  emitActivity({ type: 'hint', item: task, shown: ip.hintsShown, total: task.hints.length, text: task.hints[ip.hintsShown - 1] ?? '' });
   res.json({ hints: task.hints.slice(0, ip.hintsShown) });
 });
 
@@ -313,6 +320,7 @@ app.post('/api/items/:mod/:item/solution', (req, res) => {
   }
   ip.solutionRevealed = true;
   saveProgress();
+  emitActivity({ type: 'solution', item: task });
   res.json({ files: task.solution });
 });
 

@@ -7,6 +7,8 @@ import type { LiveCreateParams } from 'openai/resources/live/live';
 import type { SidebandWS } from 'openai/resources/live/sideband/ws';
 import type { Response as OpenAIResponse } from 'openai/resources/responses/responses';
 import type { Item } from '../content.js';
+import { peekItem } from '../progress.js';
+import { onActivity, type Activity } from './activity.js';
 import { itemContext, progressNote } from './context.js';
 import { MENTOR_INSTRUCTIONS, VOICE_BACKEND_NOTE, VOICE_INSTRUCTIONS } from './prompt.js';
 import { costOf, openaiProvider } from './providers/openai.js';
@@ -26,6 +28,18 @@ const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 type Effort = (typeof EFFORTS)[number];
 /** Finished calls stay readable this long, so the panel can show the final cost. */
 const KEEP_MS = 10 * 60_000;
+/** At most one nudge this often. */
+const NUDGE_GAP_MS = Number(process.env.FORGE_MENTOR_NUDGE_GAP_MS) || 3 * 60_000;
+/** Quiet this long on failing tests counts as stuck. */
+const STUCK_MS = Number(process.env.FORGE_MENTOR_STUCK_MS) || 3 * 60_000;
+/** A nudge waits until nobody has spoken for this long, and the learner hasn't saved for SAVE_QUIET_MS. */
+const SPEECH_QUIET_MS = 4000;
+const SAVE_QUIET_MS = 8000;
+/** Saves to one file are summed up at most this often, so typing doesn't flood the call. */
+const SAVE_EVERY_MS = 10_000;
+/** A context note may hold 500 tokens; this stays under it. */
+const NOTE_CHARS = 1400;
+const TICK_MS = 1000;
 
 /** What voice needs from the text mentor's routes. */
 export interface VoiceHost {
@@ -64,6 +78,31 @@ interface Call {
   timer: ReturnType<typeof setInterval>;
   ctl: AbortController;
   saved: boolean;
+  // Following the learner (V1).
+  /** The Nudges switch: off means the mentor only speaks when spoken to. */
+  nudges: boolean;
+  /** File contents as last seen, to say what a save changed. */
+  files: Record<string, string>;
+  /** Files saved since the last note about saves, with their content before. */
+  saveBase: Map<string, string>;
+  lastSaveNote: number;
+  lastUser: number;
+  lastMentor: number;
+  lastSave: number;
+  /** Anything the learner did or said. Quiet past STUCK_MS on failing tests counts as stuck. */
+  lastActive: number;
+  /** The last submit's first failing test, and whether the tests fail now. */
+  failing: { name: string } | null;
+  passed: number;
+  stuckNudged: boolean;
+  hintsInCall: number;
+  passedAtFirstHint: number;
+  section: string;
+  /** A nudge waiting for a quiet moment. */
+  nudge: { why: string; text: string } | null;
+  lastNudge: number;
+  /** What was sent, for the panel and the tests: context notes and nudges, newest last. */
+  notes: { kind: 'context' | 'nudge'; why: string; at: number }[];
 }
 
 const calls = new Map<string, Call>();
@@ -99,7 +138,13 @@ function startContext(host: VoiceHost, item: Item): string {
 }
 
 function addSpeech(c: Call, role: 'user' | 'assistant', delta: string) {
-  c.lastSpeech = Date.now();
+  const now = Date.now();
+  c.lastSpeech = now;
+  if (role === 'user') {
+    c.lastUser = now;
+    c.lastActive = now;
+    c.stuckNudged = false;
+  } else c.lastMentor = now;
   const last = c.turns.at(-1);
   if (last?.role === role) last.text += delta;
   else c.turns.push({ role, text: delta });
@@ -122,12 +167,7 @@ async function answerCalls(c: Call, delegation: string) {
   if (!runs?.length || c.ended) return;
   const results = await Promise.all(runs);
   if (c.ended) return;
-  // The reference tool appears once the learner passes or submits 3 times, as in the text chat.
-  const now = delegationTools(c.item);
-  if (now.length !== c.sentTools.length) {
-    c.sentTools = now.map((t) => t.name);
-    c.sideband.send({ type: 'session.update', session: { delegation: { type: 'responses', responses: { tools: now } } } });
-  }
+  updateTools(c);
   for (const r of results) {
     c.sideband.send({ type: 'response.item.create', item: { type: 'function_call_output', call_id: r.call_id, output: r.output } });
   }
@@ -184,6 +224,177 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
   }
 }
 
+/** The reference tool appears once the learner passes or submits 3 times, as in the text chat. */
+function updateTools(c: Call) {
+  const now = delegationTools(c.item);
+  const names = now.map((t) => t.name);
+  if (names.join() === c.sentTools.join()) return;
+  c.sentTools = names;
+  c.sideband.send({ type: 'session.update', session: { delegation: { type: 'responses', responses: { tools: now } } } });
+}
+
+/** Private context for the call: never spoken, it tells the mentor what the learner just did. */
+function note(c: Call, why: string, text: string) {
+  if (c.ended) return;
+  const content = text.length > NOTE_CHARS ? text.slice(0, NOTE_CHARS) + ' …' : text;
+  c.sideband.send({ type: 'session.thinking.append', delegation_id: null, content: `Update: ${content}` });
+  c.notes.push({ kind: 'context', why, at: Date.now() });
+}
+
+const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s);
+
+/** "models/Recipe.ts: lines 6-7 changed (+1 line). Now line 7: `tags: …`" */
+function describeSave(path: string, before: string, after: string): string {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let top = 0;
+  while (top < a.length && top < b.length && a[top] === b[top]) top++;
+  let end = 0;
+  while (end < a.length - top && end < b.length - top && a[a.length - 1 - end] === b[b.length - 1 - end]) end++;
+  const from = top + 1;
+  const to = b.length - end;
+  const delta = b.length - a.length;
+  const where = to >= from ? (to > from ? `lines ${from}-${to}` : `line ${from}`) : `around line ${from}`;
+  const size = delta ? ` (${delta > 0 ? '+' : ''}${delta} line${Math.abs(delta) === 1 ? '' : 's'})` : '';
+  const shown = b
+    .slice(top, Math.min(to, top + 2))
+    .map((l, i) => `line ${from + i}: \`${clip(l.trim(), 120)}\``)
+    .join('; ');
+  return `${path}: ${where} changed${size}.${shown ? ' Now ' + shown + '.' : ''}`;
+}
+
+function flushSaves(c: Call) {
+  if (!c.saveBase.size) return;
+  const parts = [...c.saveBase].map(([path, before]) => describeSave(path, before, c.files[path] ?? ''));
+  c.saveBase.clear();
+  c.lastSaveNote = Date.now();
+  note(c, 'save', `The learner saved. ${parts.join(' ')}`);
+}
+
+function queueNudge(c: Call, why: string, text: string) {
+  if (c.nudges) c.nudge = { why, text };
+}
+
+/** Follows the learner's activity for the item the call is about. */
+function follow(host: VoiceHost, c: Call, a: Activity) {
+  if (c.ended) return;
+  const now = Date.now();
+  if (a.type === 'open') {
+    if (a.item.key === c.item.key) return;
+    c.item = a.item;
+    c.files = a.item.kind === 'lesson' ? {} : { ...host.deps.taskFiles(a.item) };
+    c.saveBase.clear();
+    c.failing = null;
+    c.passed = 0;
+    c.hintsInCall = 0;
+    c.stuckNudged = false;
+    c.nudge = null;
+    c.section = '';
+    c.lastActive = now;
+    const what =
+      a.item.kind === 'lesson'
+        ? `the lesson "${a.item.title}" (key ${a.item.key}). Read it with read_lesson when it matters.`
+        : `the exercise "${a.item.title}" (key ${a.item.key}). Its instructions start: ${clip(a.item.instructions.replace(/\s+/g, ' '), 600)} Read its files and run its tests with the tools.`;
+    note(c, 'open', `The learner moved on to ${what} Earlier notes were about the previous item.`);
+    updateTools(c);
+    return;
+  }
+  if (a.item.key !== c.item.key) return;
+  c.lastActive = now;
+  c.stuckNudged = false;
+  switch (a.type) {
+    case 'save': {
+      c.lastSave = now;
+      for (const [path, content] of Object.entries(a.files)) {
+        if (typeof content !== 'string' || c.files[path] === content) continue;
+        if (!c.saveBase.has(path)) c.saveBase.set(path, c.files[path] ?? '');
+        c.files[path] = content;
+      }
+      // The first save after a while goes out at once; the rest are summed up by the tick.
+      if (now - c.lastSaveNote >= SAVE_EVERY_MS) flushSaves(c);
+      return;
+    }
+    case 'run': {
+      const out = a.out;
+      const last = out.logs.at(-1);
+      const how = out.crashed
+        ? `it crashed: ${clip(out.crashed.message, 300)}`
+        : out.compileErrors?.length
+          ? `it didn't compile: ${clip(`${out.compileErrors[0].file}:${out.compileErrors[0].line} ${out.compileErrors[0].text}`, 300)}`
+          : `it printed ${out.logs.length} line${out.logs.length === 1 ? '' : 's'}${last ? `, the last: ${clip(JSON.stringify(last), 200)}` : ''}`;
+      note(c, 'run', `The learner ran the playground; ${how}.`);
+      return;
+    }
+    case 'submit': {
+      const out = a.out;
+      const passed = out.results.filter((r) => r.passed).length;
+      const fail = out.results.find((r) => !r.passed);
+      if (out.ok) {
+        note(c, 'submit', `The learner submitted (attempt ${a.attempts}) and all ${out.results.length} tests passed. The exercise is done.`);
+        c.failing = null;
+        c.nudge = null;
+      } else {
+        const why = fail
+          ? `First failing test: "${clip(fail.name, 120)}"${fail.message ? `: ${clip(fail.message, 300)}` : ''}`
+          : out.compileErrors?.length
+            ? `It didn't compile: ${clip(out.compileErrors[0].text, 300)}`
+            : out.crashed
+              ? `It crashed: ${clip(out.crashed.message, 300)}`
+              : 'The run failed.';
+        note(c, 'submit', `The learner submitted (attempt ${a.attempts}): ${passed} of ${out.results.length} tests passed. ${why}`);
+        const name = fail?.name ?? why;
+        if (c.failing?.name === name) {
+          queueNudge(
+            c,
+            'same-test',
+            `I see the "${clip(fail?.name ?? 'same', 80)}" test failed again. Want to talk through what it expects?`,
+          );
+        }
+        c.failing = { name };
+      }
+      c.passed = passed;
+      updateTools(c);
+      return;
+    }
+    case 'hint': {
+      note(c, 'hint', `The learner opened hint ${a.shown} of ${a.total}, so they can now see it: ${clip(a.text, 500)}`);
+      c.hintsInCall++;
+      if (c.hintsInCall === 1) c.passedAtFirstHint = c.passed;
+      else if (c.passed <= c.passedAtFirstHint) {
+        queueNudge(c, 'hints', "That's a couple of hints now. Want to go through the next step together?");
+      }
+      return;
+    }
+    case 'solution':
+      note(c, 'solution', 'The learner opened the reference solution.');
+      updateTools(c);
+      return;
+  }
+}
+
+/** Once a second: sums up saves, notices a stuck learner, and lets a waiting nudge out when it's quiet. */
+function tick(host: VoiceHost, c: Call) {
+  const now = Date.now();
+  if (now - c.lastSpeech > IDLE_MS) return void end(host, c, 'idle');
+  if (c.saveBase.size && now - c.lastSaveNote >= SAVE_EVERY_MS) flushSaves(c);
+  // Stuck is the vaguest reason, so it never replaces a nudge that is already waiting.
+  if (c.failing && !c.stuckNudged && !c.nudge && now - c.lastActive >= STUCK_MS) {
+    c.stuckNudged = true;
+    queueNudge(c, 'stuck', "You've been on this one a few minutes and the tests still fail. Want a pointer on where to look?");
+  }
+  const quiet =
+    now - c.lastUser >= SPEECH_QUIET_MS && now - c.lastMentor >= SPEECH_QUIET_MS && now - c.lastSave >= SAVE_QUIET_MS;
+  if (c.nudge && c.nudges && quiet && now - c.lastNudge >= NUDGE_GAP_MS) {
+    c.sideband.send({ type: 'session.commentary.append', delegation_id: null, content: c.nudge.text });
+    c.notes.push({ kind: 'nudge', why: c.nudge.why, at: now });
+    c.lastNudge = now;
+    c.nudge = null;
+    // The stuck clock starts again from a check-in.
+    c.lastActive = now;
+    c.stuckNudged = false;
+  }
+}
+
 /** Saves the call once: its turns into the thread, its cost into the session total. */
 function finish(host: VoiceHost, c: Call, reason: string) {
   if (!c.ended) c.ended = reason;
@@ -237,10 +448,16 @@ function view(c: Call) {
     tools: c.tools,
     ended: c.ended,
     error: c.error,
+    nudges: c.nudges,
+    notes: c.notes,
   };
 }
 
 export function mountVoice(app: Express, host: VoiceHost) {
+  onActivity((a) => {
+    for (const c of calls.values()) follow(host, c, a);
+  });
+
   const fail = (res: import('express').Response, status: number, err: MentorError) =>
     void res.status(status).json({ error: err.text, code: err.code, ...(err.vars ? { vars: err.vars } : {}) });
 
@@ -253,6 +470,7 @@ export function mountVoice(app: Express, host: VoiceHost) {
     if (!link) return fail(res, 400, mentorError('noVoiceKey', 'Voice needs an OpenAI key.'));
     if ([...calls.values()].some((c) => !c.ended)) return fail(res, 409, mentorError('voiceBusy', 'A voice call is already running.'));
 
+    const nudges = req.body?.nudges !== false;
     const backend = host.backendModel();
     const wanted = req.body?.effort === 'max' ? 'xhigh' : req.body?.effort;
     const effort: Effort = (EFFORTS as readonly string[]).includes(wanted) ? wanted : 'medium';
@@ -305,12 +523,33 @@ export function mountVoice(app: Express, host: VoiceHost) {
       ended: null,
       error: null,
       lastSpeech: Date.now(),
-      timer: setInterval(() => {
-        if (Date.now() - c.lastSpeech > IDLE_MS) void end(host, c, 'idle');
-      }, 15_000),
+      timer: setInterval(() => tick(host, c), TICK_MS),
       ctl: new AbortController(),
       saved: false,
+      nudges,
+      files: item.kind === 'lesson' ? {} : { ...host.deps.taskFiles(item) },
+      saveBase: new Map(),
+      lastSaveNote: 0,
+      lastUser: 0,
+      lastMentor: 0,
+      lastSave: 0,
+      lastActive: Date.now(),
+      failing: null,
+      passed: 0,
+      stuckNudged: false,
+      hintsInCall: 0,
+      passedAtFirstHint: 0,
+      section: '',
+      nudge: null,
+      lastNudge: 0,
+      notes: [],
     };
+    // Tests that already failed before the call count, so a stuck learner gets a nudge too.
+    const last = peekItem(item.key)?.lastResult;
+    if (item.kind !== 'lesson' && last && last.passed < last.total) {
+      c.failing = { name: 'an earlier submit' };
+      c.passed = last.passed;
+    }
     calls.set(id, c);
     sideband.on('event', (ev) => onEvent(host, c, ev as { type: string }));
     sideband.on('error', (e) => {
@@ -328,6 +567,28 @@ export function mountVoice(app: Express, host: VoiceHost) {
   app.get('/api/mentor/voice/session', (req, res) => {
     const c = calls.get(String(req.query.id ?? ''));
     if (!c) return fail(res, 404, mentorError('noCall', 'No such call.'));
+    res.json(view(c));
+  });
+
+  /** What only the browser knows: the lesson section in view. */
+  app.post('/api/mentor/voice/event', (req, res) => {
+    const c = calls.get(String(req.body?.id ?? ''));
+    if (!c || c.ended) return fail(res, 404, mentorError('noCall', 'No such call.'));
+    const heading = typeof req.body?.heading === 'string' ? req.body.heading.trim().slice(0, 200) : '';
+    if (req.body?.type === 'section' && heading && heading !== c.section && c.item.kind === 'lesson') {
+      c.section = heading;
+      c.lastActive = Date.now();
+      note(c, 'section', `The learner is now reading the section "${heading}" of the lesson.`);
+    }
+    res.json({ ok: true });
+  });
+
+  /** The Nudges switch. Off drops any nudge still waiting. */
+  app.post('/api/mentor/voice/nudges', (req, res) => {
+    const c = calls.get(String(req.body?.id ?? ''));
+    if (!c) return fail(res, 404, mentorError('noCall', 'No such call.'));
+    c.nudges = req.body?.on === true;
+    if (!c.nudges) c.nudge = null;
     res.json(view(c));
   });
 
