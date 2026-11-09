@@ -1,5 +1,6 @@
 // The AI mentor's chat drawer. The learner brings an Anthropic or OpenAI key. See docs/mentor/PLAN.md.
 import { useEffect, useRef, useState } from 'react';
+import { t, type StringKey } from '../i18n';
 import { Markdown } from './Markdown';
 
 type ProviderId = 'anthropic' | 'openai';
@@ -12,6 +13,10 @@ interface Msg {
   model?: string;
   cost?: number | null;
   error?: string;
+  /** On a learner message: the project step they had moved on to. */
+  moved?: string;
+  /** Token counts of the last request, for the cost line's tooltip. Not saved. */
+  usage?: string;
 }
 interface ProviderStatus {
   id: ProviderId;
@@ -30,26 +35,32 @@ interface Status {
   providers: ProviderStatus[];
   keystore: { kind: 'dpapi' | 'keychain' | 'none'; where: string };
   summaries: boolean;
+  session: { cost: number; unknown: boolean; replies: number };
 }
 
-const EFFORT_HELP: Record<string, string> = {
-  none: 'none: answers at once, no reasoning. Cheapest.',
-  low: 'low: a little reasoning. Fast.',
-  medium: 'medium: the default. A good balance.',
-  high: 'high: thinks longer. Slower, costs more.',
-  xhigh: 'xhigh: for hard debugging. Slow.',
-  max: 'max: the most reasoning. Slowest and most expensive.',
-};
+/** What the drawer is about: the open item, if any. */
+export interface MentorItem {
+  key: string;
+  kind: 'lesson' | 'task';
+  title: string;
+  /** "Module 3 · Board resolver" or "Taskforge step 2 · Board resolver". */
+  label: string;
+  /** The thread: the item key, or project-<workspace> for a forge project. */
+  scope: string;
+}
 
 const KEY_PAGES: Record<ProviderId, string> = {
   anthropic: 'console.anthropic.com',
   openai: 'platform.openai.com',
 };
 
-const STARTERS = {
-  task: ['Why are my tests failing?', 'What should I do next?', 'Explain the idea behind this exercise'],
-  lesson: ['Explain the main idea simply', 'Quiz me on this lesson', 'Give me another example'],
+const STARTERS: Record<'task' | 'lesson', StringKey[]> = {
+  task: ['mentor.starter.task1', 'mentor.starter.task2', 'mentor.starter.task3'],
+  lesson: ['mentor.starter.lesson1', 'mentor.starter.lesson2', 'mentor.starter.lesson3'],
 };
+
+const effortHelp = (e: string) =>
+  ['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(e) ? t(`mentor.effort.${e}` as StringKey) : '';
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -62,7 +73,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const money = (n?: number | null) =>
-  n === null ? 'cost unknown' : n === undefined ? '' : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(3)}`;
+  n === null ? t('mentor.costUnknown') : n === undefined ? '' : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(3)}`;
 
 const stored = (name: string) => {
   try {
@@ -79,6 +90,9 @@ const store = (name: string, value: string) => {
   }
 };
 
+const threadUrl = (itemKey: string, provider: ProviderId) =>
+  `/api/mentor/thread?item=${encodeURIComponent(itemKey)}&provider=${provider}`;
+
 function Steps({ steps, live }: { steps: Step[]; live: boolean }) {
   return (
     <>
@@ -93,7 +107,7 @@ function Steps({ steps, live }: { steps: Step[]; live: boolean }) {
           </div>
         ) : s.text.trim() ? (
           <details key={i} className="mentor-thinking" open={live && i === steps.length - 1}>
-            <summary>Thinking</summary>
+            <summary>{t('mentor.thinking')}</summary>
             <Markdown text={s.text} />
           </details>
         ) : null,
@@ -147,26 +161,23 @@ function KeyForm({
       }}
     >
       <label className="mentor-field">
-        Provider
+        {t('mentor.provider')}
         <select value={provider} onChange={(e) => setProvider(e.target.value as ProviderId)}>
           {status.providers.map((x) => (
             <option key={x.id} value={x.id}>
               {x.name}
-              {x.hasKey ? ' (key added)' : ''}
+              {x.hasKey ? t('mentor.keyAdded') : ''}
             </option>
           ))}
         </select>
       </label>
-      <p>
-        Paste an {p.name} API key from {KEY_PAGES[provider]}. It goes only to {p.name}, and each message costs a little
-        on your {p.name} account.
-      </p>
+      <p>{t('mentor.keyIntro', { name: p.name, page: KEY_PAGES[provider] })}</p>
       <input
         type="password"
         autoComplete="off"
         spellCheck={false}
         placeholder={p.keyPlaceholder}
-        aria-label={`${p.name} API key`}
+        aria-label={t('mentor.keyLabel', { name: p.name })}
         value={key}
         onChange={(e) => setKey(e.target.value)}
       />
@@ -174,22 +185,20 @@ function KeyForm({
         <label className="mentor-check">
           <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
           <span>
-            Remember on this computer
+            {t('mentor.remember')}
             <small>
-              {remember
-                ? `Saved in ${status.keystore.where}. "Forget key" removes it.`
-                : 'Off: the key is gone when Forge Academy stops.'}
+              {remember ? t('mentor.rememberOn', { where: status.keystore.where }) : t('mentor.rememberOff')}
             </small>
           </span>
         </label>
       )}
       <div className="mentor-key-actions">
         <button className="btn primary small" disabled={!key.trim() || checking}>
-          {checking ? 'Checking…' : 'Use this key'}
+          {checking ? t('mentor.checking') : t('mentor.useKey')}
         </button>
         {onCancel && (
           <button type="button" className="btn small" onClick={onCancel}>
-            Cancel
+            {t('mentor.cancel')}
           </button>
         )}
       </div>
@@ -198,25 +207,93 @@ function KeyForm({
   );
 }
 
-export function MentorPanel({
-  itemKey,
-  itemKind,
-  onClose,
+function Settings({
+  status,
+  busy,
+  onAdd,
+  onForget,
+  onDeleteAll,
 }: {
-  itemKey: string | null;
-  itemKind: 'lesson' | 'task' | null;
-  onClose: () => void;
+  status: Status;
+  busy: boolean;
+  onAdd: (id: ProviderId) => void;
+  onForget: (id: ProviderId) => void;
+  onDeleteAll: () => Promise<string>;
 }) {
+  const [result, setResult] = useState('');
+  const { session } = status;
+  return (
+    <div className="mentor-settings">
+      <section>
+        <h4>{t('mentor.set.keys')}</h4>
+        {status.providers.map((p) => (
+          <div key={p.id} className="mentor-key-row">
+            <div>
+              <b>{p.name}</b>
+              <small>
+                {!p.hasKey
+                  ? t('mentor.set.noKey')
+                  : p.remembered
+                    ? t('mentor.set.keyRemembered', { where: status.keystore.where })
+                    : t('mentor.set.keySession')}
+              </small>
+            </div>
+            <button className="btn small" onClick={() => onAdd(p.id)} disabled={busy}>
+              {p.hasKey ? t('mentor.set.replace') : t('mentor.set.add')}
+            </button>
+            {p.hasKey && (
+              <button className="btn small" onClick={() => onForget(p.id)} disabled={busy}>
+                {t('mentor.set.forget')}
+              </button>
+            )}
+          </div>
+        ))}
+      </section>
+      <section>
+        <h4>{t('mentor.set.sentTitle')}</h4>
+        <p>{t('mentor.set.sent')}</p>
+      </section>
+      <section>
+        <h4>{t('mentor.set.spendTitle')}</h4>
+        <p>
+          {t('mentor.set.spend', { cost: money(session.cost), n: session.replies })}
+          {session.unknown ? ' ' + t('mentor.set.spendUnknown') : ''} {t('mentor.set.spendNote')}
+        </p>
+      </section>
+      <section>
+        <h4>{t('mentor.set.convTitle')}</h4>
+        <p>{t('mentor.set.convNote')}</p>
+        <button
+          className="btn small danger"
+          disabled={busy}
+          onClick={async () => {
+            if (!confirm(t('mentor.set.deleteConfirm'))) return;
+            setResult(await onDeleteAll());
+          }}
+        >
+          {t('mentor.set.deleteAll')}
+        </button>
+        {result && <p className="mentor-note-inline">{result}</p>}
+      </section>
+    </div>
+  );
+}
+
+export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClose: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [failed, setFailed] = useState(false);
-  /** Showing the key form for this provider, on top of a working chat. */
+  const [view, setView] = useState<'chat' | 'settings'>('chat');
+  /** Showing the key form for this provider. */
   const [adding, setAdding] = useState<ProviderId | null>(null);
   const [notice, setNotice] = useState('');
   const [messages, setMessages] = useState<Msg[]>([]);
+  /** The item the thread's last message was about, to mark a move to another project step. */
+  const [lastItem, setLastItem] = useState<string | null>(null);
+  /** provider|scope of the thread on screen. */
+  const [loaded, setLoaded] = useState('');
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [usage, setUsage] = useState('');
   const [efforts, setEfforts] = useState<Record<string, string | null>>(() => ({
     anthropic: stored('forge-mentor-effort-anthropic'),
     openai: stored('forge-mentor-effort-openai') ?? stored('forge-mentor-effort'),
@@ -224,8 +301,9 @@ export function MentorPanel({
   const abortRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
+  const loadStatus = () => json<Status>('/api/mentor/status').then(setStatus, () => setFailed(true));
   useEffect(() => {
-    json<Status>('/api/mentor/status').then(setStatus, () => setFailed(true));
+    void loadStatus();
   }, []);
 
   const provider = status?.providers.find((p) => p.id === status.provider) ?? null;
@@ -244,21 +322,27 @@ export function MentorPanel({
     );
   }, [provider?.id, provider?.hasKey]);
 
+  // Load the thread for the open item. Steps of one project share a thread, so moving between them
+  // keeps the conversation on screen. A reply still streaming finishes into the thread it started in.
+  const want = item && provider ? `${provider.id}|${item.scope}` : '';
   useEffect(() => {
+    if (busy || want === loaded) return;
+    setLoaded(want);
     setMessages([]);
-    setUsage('');
-    if (!itemKey || !provider) return;
-    json<{ messages: Msg[] }>(
-      `/api/mentor/thread?item=${encodeURIComponent(itemKey)}&provider=${provider.id}`,
-    ).then(
-      (r) => setMessages(r.messages),
+    setLastItem(null);
+    if (!item || !provider) return;
+    json<{ messages: Msg[]; lastItem: string | null }>(threadUrl(item.key, provider.id)).then(
+      (r) => {
+        setMessages(r.messages);
+        setLastItem(r.lastItem);
+      },
       () => {},
     );
-  }, [itemKey, provider?.id]);
+  }, [want, busy]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages]);
+  }, [messages, view]);
 
   useEffect(() => {
     if (!busy) return;
@@ -280,22 +364,20 @@ export function MentorPanel({
   const patchLast = (fn: (m: Msg) => Msg) =>
     setMessages((ms) => (ms.length ? [...ms.slice(0, -1), fn(ms[ms.length - 1])] : ms));
 
-  async function choose(next: ProviderId, nextModel: string) {
-    if (!status || busy) return;
-    if (next === status.provider && nextModel === model) return;
-    const restarts = next === status.provider && messages.length > 0;
-    if (restarts && !confirm('Another model starts a new chat for this item. Switch?')) return;
-    if (restarts && itemKey) {
-      await json(`/api/mentor/thread?item=${encodeURIComponent(itemKey)}&provider=${next}`, { method: 'DELETE' }).catch(
-        () => {},
-      );
+  async function choose(next: ProviderId, nextModel: string, s: Status | null = status) {
+    if (!s || busy) return;
+    if (next === s.provider && nextModel === s.model) return;
+    const restarts = next === s.provider && messages.length > 0;
+    if (restarts && !confirm(t('mentor.switchModel'))) return;
+    if (restarts && item) {
+      await json(threadUrl(item.key, next), { method: 'DELETE' }).catch(() => {});
       setMessages([]);
-      setUsage('');
+      setLastItem(null);
     }
     await json('/api/mentor/prefs', { method: 'PUT', body: JSON.stringify({ provider: next, model: nextModel }) }).catch(
       () => {},
     );
-    setStatus({ ...status, provider: next, model: nextModel });
+    setStatus({ ...s, provider: next, model: nextModel });
   }
 
   function keyAdded(p: ProviderStatus & { model: string; warning?: string }) {
@@ -313,39 +395,49 @@ export function MentorPanel({
     setNotice(p.warning ?? '');
   }
 
-  async function forgetKey() {
-    if (!provider || !status) return;
-    const r = await json<ProviderStatus>(`/api/mentor/key?provider=${provider.id}`, { method: 'DELETE' }).catch(
-      (e: Error) => {
-        setNotice(e.message);
-        return null;
-      },
-    );
-    const providers = status.providers.map((x) => (x.id === provider.id ? (r ?? { ...x, hasKey: false }) : x));
+  async function forgetKey(id: ProviderId) {
+    if (!status) return;
+    const r = await json<ProviderStatus>(`/api/mentor/key?provider=${id}`, { method: 'DELETE' }).catch((e: Error) => {
+      setNotice(e.message);
+      return null;
+    });
+    const providers = status.providers.map((x) => (x.id === id ? (r ?? { ...x, hasKey: false }) : x));
+    const next = { ...status, providers };
+    setStatus(next);
+    // Forgetting the key in use moves to the other provider when it has one.
     const other = providers.find((x) => x.hasKey);
-    setMessages([]);
-    setStatus({ ...status, providers, provider: other?.id ?? provider.id, model: other?.defaultModel ?? model });
-    if (other) void choose(other.id, other.defaultModel);
+    if (id === status.provider && other) void choose(other.id, other.defaultModel, next);
+  }
+
+  async function deleteAll(): Promise<string> {
+    try {
+      await json('/api/mentor/threads', { method: 'DELETE' });
+      setMessages([]);
+      setLastItem(null);
+      return t('mentor.set.deleted');
+    } catch (e) {
+      return (e as Error).message;
+    }
   }
 
   async function newChat() {
-    if (!itemKey || busy || !provider) return;
-    await json(`/api/mentor/thread?item=${encodeURIComponent(itemKey)}&provider=${provider.id}`, {
-      method: 'DELETE',
-    }).catch(() => {});
+    if (!item || busy || !provider) return;
+    await json(threadUrl(item.key, provider.id), { method: 'DELETE' }).catch(() => {});
     setMessages([]);
-    setUsage('');
+    setLastItem(null);
   }
 
   async function send(text?: string) {
     const message = (text ?? draft).trim();
-    if (!message || !itemKey || busy || !provider) return;
+    if (!message || !item || busy || !provider) return;
     if (text === undefined) setDraft('');
     setBusy(true);
     setNotice('');
+    const moved = messages.length > 0 && !!lastItem && lastItem !== item.key;
+    setLastItem(item.key);
     setMessages((ms) => [
       ...ms,
-      { role: 'user', text: message },
+      { role: 'user', text: message, ...(moved ? { moved: item.title } : {}) },
       { role: 'assistant', text: '', steps: [], effort: chosenEffort, model },
     ]);
     const ctl = new AbortController();
@@ -354,7 +446,7 @@ export function MentorPanel({
       const res = await fetch('/api/mentor/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ itemKey, message, effort: chosenEffort, provider: provider.id, model }),
+        body: JSON.stringify({ itemKey: item.key, message, effort: chosenEffort, provider: provider.id, model }),
         signal: ctl.signal,
       });
       if (!res.ok || !res.body) {
@@ -383,41 +475,50 @@ export function MentorPanel({
               return { ...m, steps };
             });
           else if (ev.type === 'usage') {
-            patchLast((m) => ({ ...m, cost: ev.cost }));
-            if (ev.input === undefined) continue;
+            if (ev.input === undefined) {
+              patchLast((m) => ({ ...m, cost: ev.cost }));
+              continue;
+            }
             const pct = ev.input ? Math.round(((ev.cached ?? 0) / ev.input) * 100) : 0;
-            setUsage(
-              `last request: ${ev.input ?? 0} in, ${pct}% cached, ${ev.output ?? 0} out` +
-                (ev.reasoning !== undefined ? ` (${ev.reasoning} reasoning)` : '') +
-                (ev.cacheMiss ? `, cache miss: ${ev.cacheMiss}` : ''),
-            );
+            const usage =
+              `Last request: ${ev.input ?? 0} tokens in, ${pct}% cached, ${ev.output ?? 0} out` +
+              (ev.reasoning !== undefined ? ` (${ev.reasoning} reasoning)` : '') +
+              (ev.cacheMiss ? `. Cache miss: ${ev.cacheMiss}` : '');
+            patchLast((m) => ({ ...m, cost: ev.cost, usage }));
           } else if (ev.type === 'error') patchLast((m) => ({ ...m, error: ev.message }));
         }
       }
     } catch (e) {
       const stopped = (e as Error).name === 'AbortError';
       // A stopped request is still billed for what it produced, and no one reports how much.
-      patchLast((m) => ({ ...m, error: stopped ? 'Stopped.' : (e as Error).message, ...(stopped ? { cost: null } : {}) }));
+      patchLast((m) => ({
+        ...m,
+        error: stopped ? t('mentor.stopped') : (e as Error).message,
+        ...(stopped ? { cost: null } : {}),
+      }));
     } finally {
       abortRef.current = null;
       setBusy(false);
+      // The settings show the session total.
+      void loadStatus();
     }
   }
 
   const unknownCost = messages.some((m) => m.cost === null);
   const total = messages.reduce((s, m) => s + (m.cost ?? 0), 0);
   const withKeys = status?.providers.filter((p) => p.hasKey) ?? [];
-  const showForm = status && (adding || !provider?.hasKey);
-  const ready = status && provider?.hasKey && !adding && itemKey;
+  const showForm = status && (adding || (view === 'chat' && !provider?.hasKey));
+  const ready = status && provider?.hasKey && !adding && view === 'chat' && item;
+  const project = item ? item.scope !== item.key : false;
 
   return (
-    <aside className="mentor-panel" aria-label="Mentor">
+    <aside className="mentor-panel" aria-label={t('mentor.title')}>
       <header className="mentor-head">
-        <b>Mentor</b>
-        {status && withKeys.length > 0 && !showForm && (
+        <b>{t('mentor.title')}</b>
+        {status && withKeys.length > 0 && !showForm && view === 'chat' && (
           <select
             className="mentor-pick"
-            aria-label="Model"
+            aria-label={t('mentor.model')}
             value={`${status.provider}|${model}`}
             disabled={busy}
             onChange={(e) => {
@@ -439,7 +540,7 @@ export function MentorPanel({
               .filter((p) => !p.hasKey)
               .map((p) => (
                 <option key={p.id} value={`add|${p.id}`}>
-                  Add {p.name} key…
+                  {t('mentor.addKeyOption', { name: p.name })}
                 </option>
               ))}
           </select>
@@ -447,74 +548,100 @@ export function MentorPanel({
         <div className="spacer" />
         {ready && (
           <button className="btn small" onClick={newChat} disabled={busy || !messages.length}>
-            New chat
+            {t('mentor.newChat')}
           </button>
         )}
-        <button className="icon-btn" onClick={onClose} title="Close">
+        {status && (
+          <button
+            className={'icon-btn' + (view === 'settings' ? ' active' : '')}
+            onClick={() => {
+              setAdding(null);
+              setView((v) => (v === 'settings' ? 'chat' : 'settings'));
+              if (view === 'chat') void loadStatus();
+            }}
+            title={view === 'settings' ? t('mentor.set.back') : t('mentor.settings')}
+            aria-label={view === 'settings' ? t('mentor.set.back') : t('mentor.settings')}
+          >
+            ⚙
+          </button>
+        )}
+        <button className="icon-btn" onClick={onClose} title={t('mentor.close')} aria-label={t('mentor.close')}>
           ✕
         </button>
       </header>
+      {item && view === 'chat' && !showForm && <div className="mentor-about">{item.label}</div>}
 
       {failed ? (
-        <p className="mentor-note">Can't reach the mentor routes.</p>
+        <p className="mentor-note">{t('mentor.unreachable')}</p>
       ) : !status ? null : showForm ? (
         <KeyForm
           status={status}
           initial={adding ?? status.provider}
           onDone={keyAdded}
-          onCancel={withKeys.length ? () => setAdding(null) : undefined}
+          onCancel={withKeys.length || view === 'settings' ? () => setAdding(null) : undefined}
         />
-      ) : !itemKey ? (
-        <p className="mentor-note">Open a lesson or exercise to chat about it.</p>
+      ) : view === 'settings' ? (
+        <>
+          {notice && <p className="mentor-error mentor-notice">{notice}</p>}
+          <Settings
+            status={status}
+            busy={busy}
+            onAdd={setAdding}
+            onForget={(id) => void forgetKey(id)}
+            onDeleteAll={deleteAll}
+          />
+        </>
+      ) : !item ? (
+        <p className="mentor-note">{t('mentor.openItem')}</p>
       ) : (
         <>
           {notice && <p className="mentor-error mentor-notice">{notice}</p>}
           <div className="mentor-log">
             {!messages.length && (
               <div className="mentor-empty">
-                <p className="mentor-note">
-                  Ask about this {itemKind === 'lesson' ? 'lesson' : 'exercise'}, or start with one of these:
-                </p>
-                {STARTERS[itemKind ?? 'task'].map((s) => (
-                  <button key={s} className="mentor-starter" onClick={() => void send(s)}>
-                    {s}
+                <p className="mentor-note">{item.kind === 'lesson' ? t('mentor.askLesson') : t('mentor.askTask')}</p>
+                {STARTERS[item.kind].map((k) => (
+                  <button key={k} className="mentor-starter" onClick={() => void send(t(k))}>
+                    {t(k)}
                   </button>
                 ))}
+                {project && <p className="mentor-note mentor-project-note">{t('mentor.projectNote')}</p>}
               </div>
             )}
             {messages.map((m, i) => {
               const live = busy && i === messages.length - 1;
               return (
-                <div key={i} className={'mentor-msg ' + m.role}>
-                  {m.steps && <Steps steps={m.steps} live={live && !m.text} />}
-                  {m.role === 'user' ? (
-                    <p>{m.text}</p>
-                  ) : m.text ? (
-                    <Markdown text={m.text} />
-                  ) : live && !m.error ? (
-                    <p className="mentor-note">Working… {elapsed}s</p>
-                  ) : null}
-                  {m.error && <p className="mentor-error">{m.error}</p>}
-                  {m.role === 'assistant' && !live && (m.cost === null || (m.cost ?? 0) > 0) && (
-                    <div className="mentor-cost">
-                      {m.effort ? `${m.effort} · ` : ''}
-                      {money(m.cost)}
-                    </div>
-                  )}
+                <div key={i} className="mentor-msg-wrap">
+                  {m.moved && <div className="mentor-moved">{t('mentor.movedTo', { title: m.moved })}</div>}
+                  <div className={'mentor-msg ' + m.role}>
+                    {m.steps && <Steps steps={m.steps} live={live && !m.text} />}
+                    {m.role === 'user' ? (
+                      <p>{m.text}</p>
+                    ) : m.text ? (
+                      <Markdown text={m.text} />
+                    ) : live && !m.error ? (
+                      <p className="mentor-note">{t('mentor.working', { s: elapsed })}</p>
+                    ) : null}
+                    {m.error && <p className="mentor-error">{m.error}</p>}
+                    {m.role === 'assistant' && !live && (m.cost === null || (m.cost ?? 0) > 0) && (
+                      <div className="mentor-cost" title={m.usage}>
+                        {m.model ? `${m.model} · ` : ''}
+                        {m.effort ? `${m.effort} · ` : ''}
+                        {money(m.cost)}
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
             <div ref={endRef} />
           </div>
-          <div className="mentor-meta">
-            {(total > 0 || unknownCost) && (
-              <span>
-                This chat: {money(total)}
-                {unknownCost ? ' + unknown' : ''}
-              </span>
-            )}
-            {usage && <span title={usage}>{usage}</span>}
-          </div>
+          {(total > 0 || unknownCost) && (
+            <div className="mentor-meta">
+              {t('mentor.thisChat', { cost: money(total) })}
+              {unknownCost ? t('mentor.plusUnknown') : ''}
+            </div>
+          )}
           <form
             className="mentor-input"
             onSubmit={(e) => {
@@ -525,7 +652,7 @@ export function MentorPanel({
             <textarea
               rows={3}
               value={draft}
-              placeholder="Message the mentor (Enter sends, Shift+Enter for a new line)"
+              placeholder={t('mentor.placeholder')}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -538,37 +665,27 @@ export function MentorPanel({
               <select
                 value={chosenEffort}
                 onChange={(e) => setEffort(e.target.value)}
-                title={`Reasoning effort. ${EFFORT_HELP[chosenEffort] ?? ''}`}
-                aria-label="Reasoning effort"
+                title={`${t('mentor.effort')}. ${effortHelp(chosenEffort)}`}
+                aria-label={t('mentor.effort')}
               >
                 {provider!.efforts.map((e) => (
-                  <option key={e} value={e} title={EFFORT_HELP[e]}>
+                  <option key={e} value={e} title={effortHelp(e)}>
                     {e}
                   </option>
                 ))}
               </select>
               {busy ? (
                 <button type="button" className="btn small" onClick={() => abortRef.current?.abort()}>
-                  Stop
+                  {t('mentor.stop')}
                 </button>
               ) : (
                 <button className="btn primary small" disabled={!draft.trim()}>
-                  Send
+                  {t('mentor.send')}
                 </button>
               )}
             </div>
           </form>
-          <div className="mentor-foot">
-            <span>{EFFORT_HELP[chosenEffort]}</span>
-            <button
-              className="mentor-forget"
-              onClick={forgetKey}
-              disabled={busy}
-              title={provider!.remembered ? `Also removes the copy in ${status.keystore.where}` : undefined}
-            >
-              Forget {provider!.name} key{provider!.remembered ? ' (remembered)' : ''}
-            </button>
-          </div>
+          <div className="mentor-foot">{effortHelp(chosenEffort)}</div>
         </>
       )}
     </aside>

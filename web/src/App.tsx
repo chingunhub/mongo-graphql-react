@@ -11,9 +11,9 @@ import { UpdateNotice } from './components/UpdateNotice';
 import { stageProgress } from './components/moduleProgress';
 import { useReferenceStatus } from './components/useReference';
 import { allowUnload } from './unloadGuard';
-import { setLanguage } from './i18n';
+import { setLanguage, t } from './i18n';
 import { Splitter, usePaneSize } from './components/Splitter';
-import { MentorPanel } from './components/MentorPanel';
+import { MentorPanel, type MentorItem } from './components/MentorPanel';
 
 interface Ctx {
   data: CurriculumData | null;
@@ -63,7 +63,23 @@ export function App() {
   useEffect(() => setCollapsed(null), [onTask]);
   const { theme, next: nextTheme } = useTheme();
   const [sidebarW, setSidebarW] = usePaneSize('sidebar', { min: 200, max: 520 });
-  const [mentorOpen, setMentorOpen] = useState(false);
+  const [mentorW, setMentorW] = usePaneSize('mentor', { min: 320, max: 900 });
+  // The drawer stays open across items and visits until the learner closes it.
+  const [mentorOpen, setMentorOpenState] = useState(() => {
+    try {
+      return localStorage.getItem('forge-mentor-open') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setMentorOpen = (open: boolean) => {
+    setMentorOpenState(open);
+    try {
+      localStorage.setItem('forge-mentor-open', open ? '1' : '0');
+    } catch {
+      /* not remembered */
+    }
+  };
   const ref = useReferenceStatus();
 
   const refresh = useCallback(async () => {
@@ -104,8 +120,26 @@ export function App() {
   let page: React.ReactNode = null;
   const m = path.match(/^\/learn\/(m\d\d)\/([^/]+)/);
   const openItem = m && data ? ctx.find(`${m[1]}/${m[2]}`) : undefined;
-  const itemKey = openItem ? openItem.item.key : null;
-  const itemKind = openItem ? (openItem.item.kind === 'lesson' ? 'lesson' : 'task') : null;
+  let mentorItem: MentorItem | null = null;
+  if (openItem) {
+    const { mod, item } = openItem;
+    // Forge steps share one thread per project; the server uses the same rule.
+    const project = item.kind !== 'lesson' && item.workspace ? item.workspace : null;
+    mentorItem = {
+      key: item.key,
+      kind: item.kind === 'lesson' ? 'lesson' : 'task',
+      title: item.title,
+      label:
+        project && item.step !== undefined
+          ? t('mentor.labelStep', {
+              project: project[0].toUpperCase() + project.slice(1),
+              n: item.step + 1,
+              title: item.title,
+            })
+          : t('mentor.labelModule', { n: mod.number, title: item.title }),
+      scope: project ? `project-${project}` : item.key,
+    };
+  }
   if (path === '/' || path === '') page = <Home />;
   else if (path.startsWith('/taskforge')) page = <TaskforgePage />;
   else if (path.startsWith('/relaydesk')) page = <RelaydeskPage />;
@@ -121,8 +155,18 @@ export function App() {
   return (
     <CurriculumContext.Provider value={ctx}>
       <div
-        className={'shell' + (collapsed ? ' collapsed' : '') + (collapsedPref === false ? ' mobile-open' : '')}
-        style={{ '--sidebar-w': sidebarW ? `${sidebarW}px` : undefined } as React.CSSProperties}
+        className={
+          'shell' +
+          (collapsed ? ' collapsed' : '') +
+          (collapsedPref === false ? ' mobile-open' : '') +
+          (mentorOpen ? ' mentor-open' : '')
+        }
+        style={
+          {
+            '--sidebar-w': sidebarW ? `${sidebarW}px` : undefined,
+            '--mentor-w': mentorW ? `${mentorW}px` : undefined,
+          } as React.CSSProperties
+        }
       >
         <header className="topbar">
           <button
@@ -192,11 +236,12 @@ export function App() {
             </div>
           )}
           <button
-            className={'icon-btn' + (mentorOpen ? ' active' : '')}
-            onClick={() => setMentorOpen((o) => !o)}
-            title="Chat with the AI mentor about the open item"
+            className={'icon-btn mentor-btn' + (mentorOpen ? ' active' : '')}
+            onClick={() => setMentorOpen(!mentorOpen)}
+            title={t('mentor.buttonTitle')}
+            aria-pressed={mentorOpen}
           >
-            Mentor
+            {t('mentor.button')}
           </button>
           <button className="icon-btn" onClick={nextTheme} title="Theme: auto → dark → light">
             {theme === 'auto' ? '◐' : theme === 'dark' ? '☾' : '☀'}
@@ -219,7 +264,18 @@ export function App() {
           )}
           {page}
         </main>
-        {mentorOpen && <MentorPanel itemKey={itemKey} itemKind={itemKind} onClose={() => setMentorOpen(false)} />}
+        {mentorOpen && (
+          <>
+            <Splitter
+              className="mentor-splitter"
+              axis="x"
+              label="Resize mentor"
+              onDrag={(x) => setMentorW(window.innerWidth - x)}
+              onReset={() => setMentorW(null)}
+            />
+            <MentorPanel item={mentorItem} onClose={() => setMentorOpen(false)} />
+          </>
+        )}
       </div>
     </CurriculumContext.Provider>
   );

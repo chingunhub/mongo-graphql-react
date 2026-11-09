@@ -56,13 +56,16 @@ export interface Conversation {
   addToolResults(results: { id: string; output: string }[]): void;
   /** Rough size of the history in characters, for the input cap. */
   size(): number;
+  /** The history as plain JSON, so the thread can be saved to disk. Never holds the key. */
+  save(): unknown;
 }
 
 /** A provider with a key in hand. */
 export interface Connection {
   /** Chat models this key can use, best first. Also proves the key works. */
   listModels(): Promise<string[]>;
-  conversation(model: string, threadKey: string): Conversation;
+  /** A new conversation, or one picked up from what save() returned. */
+  conversation(model: string, threadKey: string, saved?: unknown): Conversation;
 }
 
 export interface MentorProvider {

@@ -69,7 +69,19 @@ class AnthropicConversation implements Conversation {
   constructor(
     private client: Anthropic,
     readonly model: string,
-  ) {}
+    saved?: unknown,
+  ) {
+    const s = saved as Partial<Record<'messages' | 'pending' | 'effort', unknown>> | undefined;
+    if (s && Array.isArray(s.messages)) {
+      this.messages = s.messages as MessageParam[];
+      this.pending = Array.isArray(s.pending) ? (s.pending as ToolResultBlockParam[]) : [];
+      if ((EFFORTS as readonly unknown[]).includes(s.effort)) this.effort = s.effort as Effort;
+    }
+  }
+
+  save() {
+    return { messages: this.messages, pending: this.pending, effort: this.effort };
+  }
 
   addTurn({ context, note, message, effort }: Turn) {
     this.effort = (EFFORTS as readonly string[]).includes(effort) ? (effort as Effort) : 'medium';
@@ -184,7 +196,7 @@ export const anthropicProvider: MentorProvider = {
         const top = anthropicProvider.suggestedModels.filter((m) => ids.includes(m));
         return [...top, ...ids.filter((m) => !top.includes(m))];
       },
-      conversation: (model) => new AnthropicConversation(client, model),
+      conversation: (model, _threadKey, saved) => new AnthropicConversation(client, model, saved),
     };
   },
 

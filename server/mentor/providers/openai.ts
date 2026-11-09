@@ -62,7 +62,20 @@ class OpenAIConversation implements Conversation {
     private client: OpenAI,
     readonly model: string,
     private threadKey: string,
-  ) {}
+    saved?: unknown,
+  ) {
+    const s = saved as Partial<Record<'input' | 'baseEffort' | 'effort' | 'answered', unknown>> | undefined;
+    if (s && Array.isArray(s.input)) {
+      this.input = s.input as ResponseInputItem[];
+      this.baseEffort = typeof s.baseEffort === 'string' ? s.baseEffort : null;
+      this.effort = typeof s.effort === 'string' ? s.effort : this.baseEffort;
+      this.answered = s.answered === true;
+    }
+  }
+
+  save() {
+    return { input: this.input, baseEffort: this.baseEffort, effort: this.effort, answered: this.answered };
+  }
 
   addTurn({ context, note, message, effort }: Turn) {
     if (context) this.input.push({ role: 'developer', content: context });
@@ -192,7 +205,7 @@ export const openaiProvider: MentorProvider = {
         const ids = found.map((m) => m.id);
         return [...openaiProvider.suggestedModels.filter((m) => ids.includes(m)), ...ids.filter((m) => !openaiProvider.suggestedModels.includes(m))];
       },
-      conversation: (model, threadKey) => new OpenAIConversation(client, model, threadKey),
+      conversation: (model, threadKey, saved) => new OpenAIConversation(client, model, threadKey, saved),
     };
   },
 
