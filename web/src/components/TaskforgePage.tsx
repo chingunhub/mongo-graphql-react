@@ -23,12 +23,11 @@ const MODES: SourceMode[] = [
       'Your saved code, the starters of steps ahead of you, and supplied files. You edit a file inside the step that owns it.',
   },
   {
-    id: 'compare',
-    label: 'Compare with reference',
+    id: 'reference',
+    label: 'Finished reference',
     list: 'reference',
-    compare: true,
     notice:
-      'Only code from steps you have passed appears here, so nothing ahead of you is spoiled. A difference is not a mistake: your tests passed, and this is one other way to write it.',
+      "The finished Taskforge, with every step answered, including steps you haven't reached. Viewing it doesn't copy code into your work or count as progress. Where yours differs but your tests passed, it's just another way to write it.",
   },
 ];
 

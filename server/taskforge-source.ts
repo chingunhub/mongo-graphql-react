@@ -42,8 +42,8 @@ export function taskforgeLaunch(cur: Curriculum, progress: Progress) {
 
 export function taskforgeSource(cur: Curriculum, progress: Progress, mode: 'mine' | 'reference') {
   const { steps, count } = taskforgePassedRun(cur, progress);
-  // The reference stops at your last passed step, so a later step's answer is never in this list.
-  const files = workspaceFiles(cur, progress, 'taskforge', mode, mode === 'reference' ? count : undefined);
+  // The reference is the finished project, like Relaydesk's reference answers.
+  const files = workspaceFiles(cur, progress, 'taskforge', mode);
   if (mode === 'mine') Object.assign(files, finaleFiles(cur, progress));
   const provided = new Set(steps.flatMap((step) => step.readonly));
   const owners = new Map<string, string[]>();

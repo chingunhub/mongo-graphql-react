@@ -9,7 +9,6 @@ import {
   taskforgePieces,
   taskforgeStages,
 } from '../shared/taskforge';
-import { lineDiff } from '../web/src/components/lineDiff';
 import { afterThis, describeItems } from '../web/src/components/moduleProgress';
 import type { ModuleSummary } from '../web/src/api';
 import type { Progress } from '../server/progress';
@@ -50,22 +49,14 @@ test('every map piece and journey stop points at something real', () => {
       );
 });
 
-test('the reference view holds nothing from a step you have not passed', () => {
-  assert.deepEqual(taskforgeSource(cur, blank(), 'reference').entries, []);
-  for (const count of [1, 5, 9]) {
-    const source = taskforgeSource(cur, upTo(count), 'reference');
-    const allowed = cumulative(cur, 'taskforge', count);
-    assert.deepEqual(source.files, allowed);
-    for (const [path, code] of Object.entries(steps[count].solution))
-      if (code !== allowed[path]) assert.notEqual(source.files[path], code, path);
-  }
+test('the reference view is the finished project, whatever you have passed', () => {
+  const finished = cumulative(cur, 'taskforge', steps.length);
+  for (const count of [0, 5, steps.length]) assert.deepEqual(taskforgeSource(cur, upTo(count), 'reference').files, finished);
 });
 
-test('a passed step after a gap does not open the reference past that gap', () => {
+test('a passed step after a gap does not unlock a run past that gap', () => {
   const p = passed(blank(), [steps[0].key, steps[1].key, steps[4].key, steps[7].key]);
-  const source = taskforgeSource(cur, p, 'reference');
-  assert.equal(source.passed, 2);
-  assert.deepEqual(source.files, cumulative(cur, 'taskforge', 2));
+  assert.equal(taskforgeSource(cur, p, 'reference').passed, 2);
   assert.equal(taskforgeLaunch(cur, p).stage, null);
 });
 
@@ -140,29 +131,6 @@ test('a later finished-project task wins over an earlier one on the same file', 
   p.items['m13/b1-stale-names'] = { status: 'passed', files: { [path]: '// incident' } } as Progress['items'][string];
   p.items['m13/d1-pin-issues'] = { status: 'passed', files: { [path]: '// pin' } } as Progress['items'][string];
   assert.equal(finaleFiles(cur, p)[path], '// pin');
-});
-
-test('line diffs mark both sides and fold what did not change', () => {
-  const context = Array.from({ length: 30 }, (_, i) => 'line ' + i);
-  const mine = [...context, 'mine', ...context].join('\r\n');
-  const reference = [...context, 'theirs', ...context].join('\n');
-  const rows = lineDiff(mine, reference);
-  assert.deepEqual(
-    rows.filter((r) => r.kind === 'mine' || r.kind === 'reference').map((r) => [r.kind, r.text]),
-    [
-      ['mine', 'mine'],
-      ['reference', 'theirs'],
-    ],
-  );
-  assert.deepEqual(
-    rows.filter((r) => r.kind === 'gap').map((r) => r.text),
-    ['27 unchanged lines', '27 unchanged lines'],
-  );
-  assert.deepEqual(lineDiff('a\nb', 'a\r\nb'), []);
-  assert.deepEqual(
-    lineDiff('', 'x').map((r) => r.kind),
-    ['mine', 'reference'],
-  );
 });
 
 test('a task says what its module still holds', () => {

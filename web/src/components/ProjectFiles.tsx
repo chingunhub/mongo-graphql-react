@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ProjectFile } from '../api';
 import { CodeBlock } from './CodeBlock';
-import { lineDiff } from './lineDiff';
 import { onLinkClick } from '../router';
 
 type Kind = 'mine' | 'reference';
@@ -12,7 +11,6 @@ export interface SourceMode {
   notice: string;
   /** Which version fills the file tree. */
   list: Kind;
-  compare?: boolean;
 }
 
 function Folder({
@@ -66,28 +64,6 @@ function Folder({
   );
 }
 
-function Compare({ mine, reference }: { mine: string; reference: string }) {
-  const rows = useMemo(() => lineDiff(mine, reference), [mine, reference]);
-  if (!rows.length || rows.every((row) => row.kind === 'same' || row.kind === 'gap'))
-    return <p className="project-diff-same">Your file matches the reference line for line.</p>;
-  return (
-    <>
-      <p className="project-diff-legend">
-        <span className="mine">− yours</span> <span className="reference">+ reference</span>
-      </p>
-      <pre className="project-diff">
-        {rows.map((row, i) => (
-          <span key={i} className={row.kind}>
-            {row.kind === 'mine' ? '− ' : row.kind === 'reference' ? '+ ' : row.kind === 'gap' ? '⋯ ' : '  '}
-            {row.text}
-            {'\n'}
-          </span>
-        ))}
-      </pre>
-    </>
-  );
-}
-
 export function ProjectFiles({
   selected,
   choose,
@@ -117,7 +93,6 @@ export function ProjectFiles({
   const [entries, setEntries] = useState<ProjectFile[]>([]),
     [filter, setFilter] = useState('');
   const [content, setContent] = useState<string | null>(null),
-    [theirs, setTheirs] = useState<string | null>(null),
     [error, setError] = useState(''),
     [listing, setListing] = useState(true);
   useEffect(() => {
@@ -147,23 +122,14 @@ export function ProjectFiles({
     if (!info) return;
     let active = true;
     setContent(null);
-    setTheirs(null);
     setError('');
-    readFile(current.compare ? 'mine' : current.list, selected)
+    readFile(current.list, selected)
       .then((result) => {
         if (active) setContent(result.content);
       })
       .catch((e) => {
         if (active) setError(e.message);
       });
-    if (current.compare)
-      readFile('reference', selected)
-        .then((result) => {
-          if (active) setTheirs(result.content);
-        })
-        .catch((e) => {
-          if (active) setError(e.message);
-        });
     return () => {
       active = false;
     };
@@ -241,10 +207,8 @@ export function ProjectFiles({
               )}
               {error ? (
                 <p role="alert">{error}</p>
-              ) : content === null || (current.compare && theirs === null) ? (
+              ) : content === null ? (
                 <p role="status">Loading source…</p>
-              ) : current.compare ? (
-                <Compare mine={content} reference={theirs!} />
               ) : content.length > 60000 ? (
                 <pre className="relay-plain-source">{content}</pre>
               ) : (
