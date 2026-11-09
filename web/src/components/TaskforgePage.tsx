@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { api, type CompileError, type LaunchInfo } from '../api';
+import { api, type CompileError, type LaunchInfo, type ReferenceInfo } from '../api';
 import { useCurriculum } from '../App';
 import { onLinkClick } from '../router';
 import { GraphQLTry } from './GraphQLTry';
@@ -71,14 +71,43 @@ export function TaskforgePage() {
       setInfo(result.server);
       setWebErrors(result.web && !result.web.ok ? (result.web.compileErrors ?? []) : null);
       setFrameKey((key) => key + 1);
+      setView('mine');
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  const [ref, setRef] = useState<ReferenceInfo | null>(null);
+  const [refErrors, setRefErrors] = useState<CompileError[] | null>(null);
+  const [refBusy, setRefBusy] = useState(false);
+  const [refKey, setRefKey] = useState(0);
+  const [view, setView] = useState<'reference' | 'mine' | null>(null);
+  useEffect(() => {
+    if (tab !== 'run') return;
+    api
+      .reference()
+      .then(setRef)
+      .catch(() => {});
+  }, [tab]);
+  async function launchReference(reseed = false) {
+    setRefBusy(true);
+    setError('');
+    try {
+      const result = await api.launchReference(reseed);
+      setRef(result.server);
+      setRefErrors(result.web.ok ? null : (result.web.compileErrors ?? []));
+      setRefKey((key) => key + 1);
+      setView('reference');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRefBusy(false);
+    }
+  }
   const stage = info?.stage ?? null;
   const running = info?.status === 'running';
+  const refReady = ref?.status === 'running' && ref.web;
   const current = modules.find((mod) => mod.items.some((item) => !isDone(item)));
   return (
     <div ref={rootRef} className="home relaydesk-page">
@@ -216,39 +245,110 @@ export function TaskforgePage() {
       )}
       {tab === 'run' && (
         <>
-          <h2 className="section-title">Run what you have built</h2>
-          {stage ? (
-            <>
-              <section className="card taskforge-stage">
-                <h3>{stage.title}</h3>
-                <p>{stage.detail}</p>
-                <div className="relaydesk-actions">
-                  <button className="btn primary" disabled={busy} onClick={() => void launch(false)}>
-                    {busy ? <span className="spinner" /> : '▶'} {running ? 'Rebuild & restart' : 'Launch'}
-                  </button>
-                  <button className="btn" disabled={busy} onClick={() => void launch(true)}>
+          <h2 className="section-title">Run Taskforge</h2>
+          <p className="section-sub">
+            The finished reference and your project run on separate demo databases, so nothing you do in one
+            shows up in the other. Using the reference doesn't mark any step complete. On either board, log in
+            as <code>ada@taskforge.dev</code> / <code>password123</code>.
+          </p>
+          <div className="relaydesk-launch-grid">
+            <section className="card relaydesk-launch">
+              <h3>Reference demo</h3>
+              <p>The finished Taskforge, API and board. Explore what you're building before you build it.</p>
+              <div className="relaydesk-actions">
+                <button
+                  className="btn primary"
+                  disabled={refBusy}
+                  onClick={() => (refReady ? setView('reference') : void launchReference(false))}
+                >
+                  {refBusy ? <span className="spinner" /> : refReady ? 'Show' : '▶ Launch'}
+                </button>
+                {refReady && (
+                  <button className="btn" disabled={refBusy} onClick={() => void launchReference(true)}>
                     Reset demo data
                   </button>
-                  <span className="taskforge-status">
-                    <span className={'status-dot ' + info?.status} /> server {info?.status}
-                  </span>
-                  {running && stage.web && (
-                    <a className="btn small" href="/launch/" target="_blank" rel="noreferrer">
-                      Open in new window ↗
-                    </a>
-                  )}
-                </div>
-                <p className="section-sub">
-                  Runs your saved code from {info?.count} of {info?.total} steps on its own demo database,
-                  including any unfinished edits you have saved for the next step.
-                  {stage.web === 'app' && (
-                    <>
-                      {' '}
-                      Log in as <code>ada@taskforge.dev</code> / <code>password123</code>.
-                    </>
-                  )}
+                )}
+              </div>
+              <p className="section-sub">
+                <span className={'status-dot ' + (ref?.status ?? 'stopped')} /> server {ref?.status ?? 'stopped'}
+              </p>
+            </section>
+            <section className="card relaydesk-launch">
+              <h3>Your Taskforge</h3>
+              {stage ? (
+                <>
+                  <p>
+                    <strong>{stage.title}.</strong> {stage.detail}
+                  </p>
+                  <div className="relaydesk-actions">
+                    <button className="btn primary" disabled={busy} onClick={() => void launch(false)}>
+                      {busy ? <span className="spinner" /> : '▶'} {running ? 'Rebuild & restart' : 'Launch'}
+                    </button>
+                    {running && view !== 'mine' && (
+                      <button className="btn" disabled={busy} onClick={() => setView('mine')}>
+                        Show
+                      </button>
+                    )}
+                    <button className="btn" disabled={busy} onClick={() => void launch(true)}>
+                      Reset demo data
+                    </button>
+                  </div>
+                  <p className="section-sub">
+                    <span className={'status-dot ' + info?.status} /> server {info?.status}. Runs your saved code
+                    from {info?.count} of {info?.total} steps, including any unfinished edits you have saved for
+                    the next step.
+                  </p>
+                </>
+              ) : (
+                <p>
+                  Nothing runs yet, and that's expected. Models and repositories have no way in from the
+                  outside. Module 7 gives your code an API, and from then on you can run the latest step you
+                  passed.
                 </p>
-              </section>
+              )}
+            </section>
+          </div>
+          {view === 'reference' && (
+            <>
+              {refErrors?.map((e, i) => (
+                <div className="compile-error" key={i}>
+                  <span className="where">
+                    {e.file}:{e.line}:{e.column}
+                  </span>{' '}
+                  {e.text}
+                </div>
+              ))}
+              {ref?.status === 'running' ? (
+                <>
+                  <div key={'reference' + refKey} className="taskforge-explorer">
+                    <GraphQLTry target="reference" source={QUERY} />
+                    <GraphQLTry target="reference" source={BOARD} />
+                    <GraphQLTry target="reference" source={ME + '\n---variables---\n---token---\ndemo'} />
+                  </div>
+                  {ref.web && !refErrors && (
+                    <section className="relaydesk-preview">
+                      <div>
+                        <strong>Reference demo</strong>
+                        <a className="btn small" href="/reference-app/" target="_blank" rel="noreferrer">
+                          Open in new window ↗
+                        </a>
+                      </div>
+                      <iframe
+                        key={refKey}
+                        className="preview-frame"
+                        src="/reference-app/"
+                        title="Taskforge reference demo"
+                      />
+                    </section>
+                  )}
+                </>
+              ) : (
+                ref?.log.length ? <pre className="card taskforge-log">{ref.log.join('\n')}</pre> : null
+              )}
+            </>
+          )}
+          {view === 'mine' && stage && (
+            <>
               {webErrors?.map((e, i) => (
                 <div className="compile-error" key={i}>
                   <span className="where">
@@ -265,26 +365,24 @@ export function TaskforgePage() {
                 </div>
               )}
               {running && stage.web && !webErrors && (
-                <div className="card taskforge-frame">
+                <section className="relaydesk-preview">
+                  <div>
+                    <strong>Your Taskforge</strong>
+                    <a className="btn small" href="/launch/" target="_blank" rel="noreferrer">
+                      Open in new window ↗
+                    </a>
+                  </div>
                   <iframe key={frameKey} className="preview-frame" src="/launch/" title="Your Taskforge" />
-                </div>
+                </section>
               )}
               {info && !running && info.log.length > 0 && (
                 <pre className="card taskforge-log">{info.log.join('\n')}</pre>
               )}
             </>
-          ) : (
-            <section className="card taskforge-stage">
-              <h3>Nothing runs yet, and that is expected</h3>
-              <p>
-                Models and repositories have no way in from the outside. Module 7 gives your code an API, and
-                from then on you can run the latest step you passed.
-              </p>
-            </section>
           )}
           {info?.next && (
             <p className="section-sub">
-              Next unlock: <strong>{info.next.stage.title}</strong>,{' '}
+              Next unlock for yours: <strong>{info.next.stage.title}</strong>,{' '}
               {info.next.stepsAway === 1 ? '1 forge step' : info.next.stepsAway + ' forge steps'} away.
             </p>
           )}

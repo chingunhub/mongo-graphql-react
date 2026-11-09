@@ -154,7 +154,13 @@ export const api = {
   review: () => call<ReviewSession>('GET', '/api/review'),
   answerReview: (id: string, outcome: 'right' | 'wrong' | 'skip') => call('POST', '/api/review', { id, outcome }),
   restReview: () => call('POST', '/api/review/rest'),
-  reference: () => call<{ status: string; log: string[] }>('GET', '/api/reference'),
+  reference: () => call<ReferenceInfo>('GET', '/api/reference'),
+  launchReference: (reseed = false) =>
+    call<{ server: ReferenceInfo; web: { ok: boolean; compileErrors?: CompileError[] } }>(
+      'POST',
+      '/api/reference/launch',
+      { reseed },
+    ),
   restartReference: () => call<{ status: string; log: string[] }>('POST', '/api/reference/restart'),
   update: () =>
     call<{ current: string | null; latest: string | null; command: string | null }>('GET', '/api/update'),
@@ -198,6 +204,13 @@ export interface RelaydeskService {
   port: number;
   log: string[];
   url: string;
+}
+
+export interface ReferenceInfo {
+  status: string;
+  log: string[];
+  /** Whether the finished board has been built this session. */
+  web: boolean;
 }
 
 export interface LaunchInfo {

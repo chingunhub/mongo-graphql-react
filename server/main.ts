@@ -462,11 +462,41 @@ app.post('/reference/graphql', async (req, res) => {
   const r = await proxyGraphQL('reference', req.body, req.get('authorization'));
   res.status(r.status).json(r.json);
 });
-app.get('/api/reference', (_req, res) => res.json(serviceInfo('reference')));
+app.get('/api/reference', (_req, res) =>
+  res.json({ ...serviceInfo('reference'), web: !!getBundle('reference-app') }),
+);
 app.post('/api/reference/restart', async (_req, res) => {
   const files = referenceFiles();
   if (!files) return void res.status(400).json({ error: 'Reference not available' });
   res.json(await startService('reference', files, 'forge_reference', true));
+});
+// The finished board, talking to the reference API. Lessons share that API, so it only
+// restarts (and reseeds) when it isn't running or the learner asks for fresh demo data.
+app.post('/api/reference/launch', async (req, res) => {
+  const files = referenceFiles();
+  if (!files) return void res.status(400).json({ error: 'Reference not available' });
+  if (req.body?.reseed || serviceInfo('reference').status !== 'running')
+    await startService('reference', files, 'forge_reference', true);
+  const entry = [
+    "import { createRoot } from 'react-dom/client';",
+    "import { App } from './App';",
+    "import './styles.css';",
+    "createRoot(document.getElementById('root')!).render(<App uri=\"/reference/graphql\" />);",
+  ].join('\n');
+  const web = await buildBrowserBundle(
+    'reference-app',
+    { ...files, 'web/__reference__.tsx': entry },
+    'web/__reference__.tsx',
+  );
+  res.json({ server: { ...serviceInfo('reference'), web: !!getBundle('reference-app') }, web });
+});
+app.get('/reference-app/', (_req, res) =>
+  res.type('html').send(previewHtml('reference-app', 'Taskforge reference')),
+);
+app.get('/reference-app/bundle.:ext', (req, res) => {
+  const b = getBundle('reference-app');
+  if (req.params.ext === 'css') return void res.type('css').send(b?.css ?? '');
+  res.type('js').send(b?.js ?? 'document.body.textContent = "Launch the reference from the course first."');
 });
 
 app.post('/mine/graphql', async (req, res) => {
