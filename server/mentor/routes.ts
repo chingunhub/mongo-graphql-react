@@ -1,74 +1,106 @@
-// Phase 0 spike of the AI mentor: one provider (OpenAI, GPT-6.1 Terra), key in memory only,
-// conversations in memory only. See docs/mentor/PLAN.md for where this is going.
+// The AI mentor's routes. The learner brings their own key for Anthropic or OpenAI. Keys stay in
+// memory unless the learner ticks "Remember on this computer" (see keystore.ts). Conversations
+// stay in memory. See docs/mentor/PLAN.md.
 import type { Express, NextFunction, Request, Response } from 'express';
-import OpenAI from 'openai';
-import type { ResponseInputItem, Response as OpenAIResponse } from 'openai/resources/responses/responses';
 import type { Item } from '../content.js';
-import { MENTOR_INSTRUCTIONS } from './prompt.js';
+import { getProgress, saveProgress } from '../progress.js';
 import { itemContext, progressNote } from './context.js';
-import { TOOL_SPECS, runTool, type MentorDeps } from './tools.js';
+import { keystore } from './keystore.js';
+import { anthropicProvider } from './providers/anthropic.js';
+import { openaiProvider, openaiSummaries } from './providers/openai.js';
+import {
+  CutShort,
+  scrub,
+  type Connection,
+  type Conversation,
+  type MentorProvider,
+  type ProviderId,
+  type RoundUsage,
+  type StepKind,
+} from './providers/types.js';
+import { runTool, type MentorDeps } from './tools.js';
 
-const MODEL = process.env.FORGE_MENTOR_MODEL ?? 'gpt-6.1-terra';
-const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-type Effort = (typeof EFFORTS)[number];
-const DEFAULT_EFFORT: Effort = 'medium';
+const PROVIDERS: Record<ProviderId, MentorProvider> = { anthropic: anthropicProvider, openai: openaiProvider };
+const ORDER: ProviderId[] = ['anthropic', 'openai'];
+const isProvider = (v: unknown): v is ProviderId => typeof v === 'string' && v in PROVIDERS;
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\-]{0,99}$/;
 const MAX_ROUNDS = 8;
-/** A ceiling, not a target: reasoning counts against it, and OpenAI suggests leaving room for it. */
-const MAX_OUTPUT_TOKENS = 32_000;
-/** Terra bills the whole request higher past 272K input tokens, so stay well under. */
-const MAX_INPUT_TOKENS = 200_000;
-/** USD per million tokens for GPT-6.1 Terra (OpenAI model page, 2026-11-09). */
-const PRICE = { input: 1, cached: 0.05, cacheWrite: 1.25, output: 5 };
+/** Characters, at about 3.5 per token: stays well under 200K input tokens, below any long-prompt price step. */
+const MAX_HISTORY_CHARS = 200_000 * 3.5;
 
-/** What happened on the way to an answer, in order: reasoning summaries, progress notes, tool calls. */
-type Step = { kind: 'thinking' | 'note' | 'tool'; text: string };
+type Step = { kind: StepKind; text: string };
 interface DisplayMessage {
   role: 'user' | 'assistant';
   text: string;
   steps?: Step[];
-  effort?: Effort;
-  cost?: number;
+  effort?: string;
+  model?: string;
+  /** USD; null when the model's price isn't known. */
+  cost?: number | null;
   error?: string;
 }
 interface Thread {
-  input: ResponseInputItem[];
+  conv: Conversation | null;
   display: DisplayMessage[];
   lastNote: string;
   busy: boolean;
-  /** Effort sent on every request of this thread. Never changes, so the cached prefix holds. */
-  baseEffort: Effort | null;
-  /** Effort in force, changed with configuration_update items. */
-  effort: Effort | null;
+}
+interface KeyState {
+  conn: Connection;
+  /** Filled when the key is checked, or on the first models request after a restart. */
+  models: string[] | null;
+  remembered: boolean;
 }
 
-// The key lives only in this variable (or the environment). It is never logged, stored or sent to the browser.
-let apiKey: string | null = process.env.FORGE_MENTOR_OPENAI_KEY || null;
-let client: OpenAI | null = apiKey ? new OpenAI({ apiKey, maxRetries: 2, timeout: 300_000 }) : null;
-/** Reasoning summaries need a verified OpenAI organization. Turned off for the session after the first refusal. */
-let summaries = process.env.FORGE_MENTOR_SUMMARIES !== '0';
+// Keys live only in this map (and the key store when the learner asks). Never logged or sent to the browser.
+const keys = new Map<ProviderId, KeyState>();
 const threads = new Map<string, Thread>();
+const threadId = (provider: ProviderId, item: string) => `${provider}:${item}`;
 
-const thread = (key: string): Thread => {
-  let t = threads.get(key);
-  if (!t) threads.set(key, (t = { input: [], display: [], lastNote: '', busy: false, baseEffort: null, effort: null }));
-  return t;
+const ENV_KEYS: Record<ProviderId, string | undefined> = {
+  anthropic: process.env.FORGE_MENTOR_ANTHROPIC_KEY,
+  openai: process.env.FORGE_MENTOR_OPENAI_KEY,
 };
 
-const scrub = (s: string) => s.replace(/sk-[A-Za-z0-9_*\-]{6,}/g, '[key]');
-
-/** A message safe to show the learner. Never passes the provider's raw 401 text, which can echo part of the key. */
-function friendly(e: unknown): string {
-  if (e instanceof OpenAI.APIUserAbortError) return 'Stopped.';
-  if (e instanceof OpenAI.APIConnectionError) return "Couldn't reach OpenAI. Check the internet connection.";
-  if (e instanceof OpenAI.APIError) {
-    if (e.status === 401) return 'OpenAI rejected the key.';
-    if (e.status === 403) return `This key isn't allowed to use ${MODEL}.`;
-    if (e.status === 404) return `OpenAI doesn't offer ${MODEL} to this key.`;
-    if (e.status === 429) return 'OpenAI said slow down or out of credit (429). Check the usage limits on the OpenAI account.';
-    if (e.status && e.status >= 500) return 'OpenAI is having trouble right now. Try again in a minute.';
-    return scrub(`OpenAI refused the request (${e.status ?? '?'}): ${e.message}`);
+/** Remembered keys load once at startup; routes wait for it so the panel never flashes the key form. */
+const ready = (async () => {
+  for (const id of ORDER) {
+    let key = ENV_KEYS[id] || null;
+    let remembered = false;
+    if (!key) {
+      try {
+        key = await keystore.load(id);
+        remembered = !!key;
+      } catch (e) {
+        console.warn(`[mentor] couldn't unlock the remembered ${PROVIDERS[id].name} key:`, scrub((e as Error).message));
+      }
+    }
+    if (key) keys.set(id, { conn: PROVIDERS[id].connect(key), models: null, remembered });
   }
-  return scrub((e as Error)?.message ?? String(e));
+})();
+
+interface Prefs {
+  provider: ProviderId;
+  model: string;
+}
+
+/** The learner's last provider and model. Saved with progress; the key never is. */
+function prefs(): Prefs {
+  const saved = getProgress().settings.mentor;
+  const provider = isProvider(saved?.provider)
+    ? saved.provider
+    : (ORDER.find((id) => keys.has(id)) ?? 'anthropic');
+  const model =
+    saved?.provider === provider && saved.model && MODEL_ID.test(saved.model)
+      ? saved.model
+      : PROVIDERS[provider].defaultModel;
+  return { provider, model };
+}
+
+function setPrefs(next: Prefs) {
+  const p = getProgress();
+  p.settings = { ...p.settings, mentor: next };
+  saveProgress();
 }
 
 /** Mentor routes spend the learner's money, so only this app's own pages may call them. */
@@ -81,70 +113,152 @@ function sameOrigin(req: Request, res: Response, next: NextFunction) {
   if (origin ? origin !== `http://${host}` : req.method !== 'GET') {
     return void res.status(403).json({ error: 'Wrong origin.' });
   }
-  if (req.method === 'POST' && !req.is('application/json')) {
+  if ((req.method === 'POST' || req.method === 'PUT') && !req.is('application/json')) {
     return void res.status(415).json({ error: 'JSON only.' });
   }
   next();
 }
 
-function costOf(usage: OpenAIResponse['usage']): number {
-  if (!usage) return 0;
-  const cached = usage.input_tokens_details?.cached_tokens ?? 0;
-  const written = usage.input_tokens_details?.cache_write_tokens ?? 0;
-  const fresh = Math.max(0, usage.input_tokens - cached - written);
-  return (fresh * PRICE.input + cached * PRICE.cached + written * PRICE.cacheWrite + usage.output_tokens * PRICE.output) / 1e6;
+function providerStatus(p: MentorProvider) {
+  const k = keys.get(p.id);
+  return {
+    id: p.id,
+    name: p.name,
+    keyPlaceholder: p.keyPlaceholder,
+    hasKey: !!k,
+    remembered: !!k?.remembered,
+    models: k?.models ?? p.suggestedModels,
+    defaultModel: p.defaultModel,
+    efforts: p.efforts,
+    defaultEffort: p.defaultEffort,
+  };
 }
 
 export function mountMentor(app: Express, deps: MentorDeps) {
   app.use('/api/mentor', sameOrigin);
+  app.use('/api/mentor', (_req, _res, next) => void ready.then(() => next()));
 
   app.get('/api/mentor/status', (_req, res) => {
-    res.json({ hasKey: !!client, model: MODEL, efforts: EFFORTS, defaultEffort: DEFAULT_EFFORT, summaries, provider: 'openai' });
+    const { provider, model } = prefs();
+    res.json({
+      provider,
+      model,
+      providers: ORDER.map((id) => providerStatus(PROVIDERS[id])),
+      keystore: { kind: keystore.kind, where: keystore.where },
+      summaries: openaiSummaries(),
+    });
+  });
+
+  app.put('/api/mentor/prefs', (req, res) => {
+    const provider = req.body?.provider;
+    const model = req.body?.model;
+    if (!isProvider(provider)) return void res.status(400).json({ error: 'Unknown provider.' });
+    if (typeof model !== 'string' || !MODEL_ID.test(model)) return void res.status(400).json({ error: 'Bad model name.' });
+    setPrefs({ provider, model });
+    res.json({ provider, model });
+  });
+
+  app.get('/api/mentor/models', async (req, res) => {
+    const id = req.query.provider;
+    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
+    const k = keys.get(id);
+    if (!k) return void res.json({ models: PROVIDERS[id].suggestedModels });
+    try {
+      k.models = await k.conn.listModels();
+      res.json({ models: k.models });
+    } catch (e) {
+      res.status(502).json({ error: PROVIDERS[id].friendly(e) });
+    }
   });
 
   app.post('/api/mentor/key', async (req, res) => {
+    const id = req.body?.provider;
+    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
+    const p = PROVIDERS[id];
     const key = typeof req.body?.key === 'string' ? req.body.key.trim() : '';
-    if (!key) return void res.status(400).json({ error: 'Paste an OpenAI API key.' });
-    const candidate = new OpenAI({ apiKey: key, maxRetries: 1, timeout: 20_000 });
+    if (!key) return void res.status(400).json({ error: `Paste an ${p.name} API key.` });
+    const remember = req.body?.remember === true;
+    const conn = p.connect(key);
+    let models: string[];
     try {
-      await candidate.models.retrieve(MODEL);
+      // Listing models is free and proves the key works.
+      models = await conn.listModels();
     } catch (e) {
-      return void res.status(400).json({ error: friendly(e) });
+      return void res.status(400).json({ error: p.friendly(e) });
     }
-    apiKey = key;
-    client = new OpenAI({ apiKey, maxRetries: 2, timeout: 300_000 });
-    res.json({ hasKey: true, model: MODEL });
+    if (!models.length) return void res.status(400).json({ error: `This key can't use any ${p.name} chat model.` });
+    let remembered = false;
+    let warning: string | undefined;
+    try {
+      if (remember) {
+        await keystore.save(id, key);
+        remembered = true;
+      } else await keystore.remove(id);
+    } catch (e) {
+      warning = `The key works, but it wasn't saved: ${scrub((e as Error).message)}`;
+    }
+    keys.set(id, { conn, models, remembered });
+    const current = prefs();
+    const model = current.provider === id && models.includes(current.model) ? current.model : (models.includes(p.defaultModel) ? p.defaultModel : models[0]);
+    setPrefs({ provider: id, model });
+    res.json({ ...providerStatus(p), model, warning });
   });
 
-  app.delete('/api/mentor/key', (_req, res) => {
-    apiKey = null;
-    client = null;
-    res.json({ hasKey: false });
+  app.delete('/api/mentor/key', async (req, res) => {
+    const id = req.query.provider;
+    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
+    keys.delete(id);
+    for (const [k, t] of threads) if (k.startsWith(id + ':') && !t.busy) threads.delete(k);
+    try {
+      await keystore.remove(id);
+    } catch (e) {
+      return void res.status(500).json({ error: `Forgotten for now, but the saved copy couldn't be removed: ${scrub((e as Error).message)}` });
+    }
+    res.json(providerStatus(PROVIDERS[id]));
   });
+
+  const threadOf = (req: Request) => {
+    const provider = isProvider(req.query.provider) ? req.query.provider : prefs().provider;
+    return threadId(provider, String(req.query.item ?? ''));
+  };
 
   app.get('/api/mentor/thread', (req, res) => {
-    const key = String(req.query.item ?? '');
-    res.json({ messages: threads.get(key)?.display ?? [] });
+    const t = threads.get(threadOf(req));
+    res.json({ messages: t?.display ?? [], model: t?.conv?.model ?? null });
   });
 
   app.delete('/api/mentor/thread', (req, res) => {
-    const key = String(req.query.item ?? '');
-    if (threads.get(key)?.busy) return void res.status(409).json({ error: 'Still answering.' });
-    threads.delete(key);
+    const id = threadOf(req);
+    if (threads.get(id)?.busy) return void res.status(409).json({ error: 'Still answering.' });
+    threads.delete(id);
     res.json({ ok: true });
   });
 
   app.post('/api/mentor/chat', async (req, res) => {
     const itemKey = typeof req.body?.itemKey === 'string' ? req.body.itemKey : '';
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
-    const effort: Effort = EFFORTS.includes(req.body?.effort) ? req.body.effort : DEFAULT_EFFORT;
+    const id = req.body?.provider;
+    const model = req.body?.model;
     const item: Item | undefined = deps.curriculum().byKey.get(itemKey);
     if (!item) return void res.status(404).json({ error: 'Open a lesson or exercise first.' });
     if (!message) return void res.status(400).json({ error: 'Empty message.' });
-    if (!client) return void res.status(400).json({ error: 'Add an OpenAI key first.' });
-    const t = thread(itemKey);
-    if (t.busy) return void res.status(409).json({ error: 'Still answering the last message.' });
-    t.busy = true;
+    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
+    if (typeof model !== 'string' || !MODEL_ID.test(model)) return void res.status(400).json({ error: 'Bad model name.' });
+    const p = PROVIDERS[id];
+    const k = keys.get(id);
+    if (!k) return void res.status(400).json({ error: `Add an ${p.name} key first.` });
+    const effort: string = p.efforts.includes(req.body?.effort) ? req.body.effort : p.defaultEffort;
+
+    const tid = threadId(id, itemKey);
+    let t = threads.get(tid);
+    if (t?.busy) return void res.status(409).json({ error: 'Still answering the last message.' });
+    // Another model can't reuse this thread's cache or its reasoning, so a model change starts over.
+    if (!t || (t.conv && t.conv.model !== model)) {
+      t = { conv: null, display: [], lastNote: '', busy: false };
+      threads.set(tid, t);
+    }
+    const thread = t;
+    thread.busy = true;
 
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -159,131 +273,68 @@ export function mountMentor(app: Express, deps: MentorDeps) {
       if (!res.writableEnded) ctl.abort();
     });
 
-    if (!t.input.length) {
-      t.input.push({ role: 'developer', content: itemContext(deps, item) });
-    }
+    const fresh = !thread.conv;
+    const conv = (thread.conv ??= k.conn.conversation(model, itemKey));
     const note = progressNote(item);
-    if (note !== t.lastNote) {
-      t.input.push({ role: 'developer', content: note });
-      t.lastNote = note;
-    }
-    // The first message fixes the thread's request-level effort; later changes ride in the input
-    // as configuration_update items, which keeps everything before them cached.
-    if (!t.baseEffort) t.baseEffort = t.effort = effort;
-    else if (effort !== t.effort) {
-      t.input.push({ type: 'configuration_update', reasoning: { effort } });
-      t.effort = effort;
-    }
-    t.input.push({ role: 'user', content: message });
-    t.display.push({ role: 'user', text: message });
-    const reply: DisplayMessage = { role: 'assistant', text: '', steps: [], effort, cost: 0 };
-    t.display.push(reply);
-    const step = (kind: Step['kind'], text: string, append = false) => {
-      const last = reply.steps!.at(-1);
-      if (append && last?.kind === kind) last.text += text;
-      else reply.steps!.push({ kind, text });
-      send({ type: 'step', kind, text, append });
+    conv.addTurn({
+      context: fresh ? itemContext(deps, item) : undefined,
+      note: note !== thread.lastNote ? note : undefined,
+      message,
+      effort,
+    });
+    thread.lastNote = note;
+    thread.display.push({ role: 'user', text: message });
+    const reply: DisplayMessage = { role: 'assistant', text: '', steps: [], effort, model, cost: 0 };
+    thread.display.push(reply);
+
+    const sink = {
+      text(delta: string) {
+        reply.text += delta;
+        send({ type: 'text', delta });
+      },
+      step(kind: StepKind, text: string, append = false) {
+        const last = reply.steps!.at(-1);
+        if (append && last?.kind === kind) last.text += text;
+        else reply.steps!.push({ kind, text });
+        send({ type: 'step', kind, text, append });
+      },
+    };
+    const count = (u: RoundUsage) => {
+      reply.cost = u.cost === null || reply.cost === null || reply.cost === undefined ? null : reply.cost + u.cost;
+      send({ type: 'usage', ...u, cost: reply.cost });
     };
 
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
-        const estimate = Math.ceil(JSON.stringify(t.input).length / 3.5);
-        if (estimate > MAX_INPUT_TOKENS) {
+        if (conv.size() > MAX_HISTORY_CHARS) {
           throw new Error('This conversation is too long. Start a new one to keep costs down.');
         }
-        const request = () =>
-          client!.responses.create(
-            {
-              model: MODEL,
-              instructions: MENTOR_INSTRUCTIONS,
-              input: t.input,
-              tools: TOOL_SPECS.map((s) => ({ type: 'function' as const, strict: true, ...s })),
-              tool_choice: 'auto',
-              reasoning: { effort: t.baseEffort, ...(summaries ? { summary: 'auto' as const } : {}) },
-              max_output_tokens: MAX_OUTPUT_TOKENS,
-              store: false,
-              include: ['reasoning.encrypted_content'],
-              prompt_cache_key: 'forge-mentor:' + itemKey,
-              stream: true,
-            },
-            { signal: ctl.signal },
-          );
-        let stream;
-        try {
-          stream = await request();
-        } catch (e) {
-          const refusedSummary =
-            summaries && e instanceof OpenAI.APIError && e.status === 400 && /summar|verif/i.test(e.message);
-          if (!refusedSummary) throw e;
-          summaries = false;
-          console.warn('[mentor] reasoning summaries refused for this key; continuing without them');
-          stream = await request();
-        }
-        let final: OpenAIResponse | null = null;
-        // Assistant text marked phase "commentary" is a progress note, not the answer.
-        const commentary = new Set<string>();
-        for await (const ev of stream) {
-          if (ev.type === 'response.output_item.added') {
-            if (ev.item.type === 'message' && ev.item.phase === 'commentary') commentary.add(ev.item.id);
-          } else if (ev.type === 'response.reasoning_summary_part.added') {
-            step('thinking', '');
-          } else if (ev.type === 'response.reasoning_summary_text.delta') {
-            step('thinking', ev.delta, true);
-          } else if (ev.type === 'response.output_text.delta' || ev.type === 'response.refusal.delta') {
-            if (commentary.has(ev.item_id)) step('note', ev.delta, true);
-            else {
-              reply.text += ev.delta;
-              send({ type: 'text', delta: ev.delta });
-            }
-          } else if (ev.type === 'response.completed' || ev.type === 'response.incomplete') {
-            final = ev.response;
-          } else if (ev.type === 'response.failed') {
-            throw new Error(ev.response.error?.message ?? 'The response failed.');
-          } else if (ev.type === 'error') {
-            throw new Error(ev.message);
-          }
-        }
-        if (!final) throw new Error('The stream ended without a response.');
-        t.input.push(...(final.output as unknown as ResponseInputItem[]));
-        const cost = costOf(final.usage);
-        reply.cost = (reply.cost ?? 0) + cost;
-        send({
-          type: 'usage',
-          cost: reply.cost,
-          input: final.usage?.input_tokens,
-          cached: final.usage?.input_tokens_details?.cached_tokens,
-          output: final.usage?.output_tokens,
-          reasoning: final.usage?.output_tokens_details?.reasoning_tokens,
-          cacheMiss:
-            final.prompt_cache_diagnostics?.type === 'cache_miss' ? final.prompt_cache_diagnostics.reason : undefined,
-        });
-        if (final.status === 'incomplete') {
-          throw new Error(`The reply was cut short (${final.incomplete_details?.reason ?? 'unknown reason'}).`);
-        }
-        const calls = final.output.filter((o) => o.type === 'function_call');
+        const { calls, usage } = await conv.round(sink, ctl.signal);
+        count(usage);
         if (!calls.length) break;
-        // Every call gets an output, even when stopped, or the next request is rejected.
+        // Every call gets an answer, even when stopped, or the next request is rejected.
+        const results: { id: string; output: string }[] = [];
         for (const call of calls) {
           const outcome = ctl.signal.aborted
             ? { output: 'Cancelled by the learner.', label: '' }
-            : await runTool(deps, item, call.name, call.arguments, ctl.signal);
-          t.input.push({ type: 'function_call_output', call_id: call.call_id, output: outcome.output });
-          if (outcome.label) step('tool', outcome.label);
+            : await runTool(deps, item, call.name, call.args, ctl.signal);
+          results.push({ id: call.id, output: outcome.output });
+          if (outcome.label) sink.step('tool', outcome.label);
         }
-        if (ctl.signal.aborted) throw new OpenAI.APIUserAbortError();
-        if (reply.text && !reply.text.endsWith('\n')) {
-          reply.text += '\n\n';
-          send({ type: 'text', delta: '\n\n' });
-        }
+        conv.addToolResults(results);
+        if (ctl.signal.aborted) break;
+        if (reply.text && !reply.text.endsWith('\n')) sink.text('\n\n');
       }
+      if (ctl.signal.aborted) throw new Error('Stopped.');
       send({ type: 'done' });
     } catch (e) {
-      const msg = friendly(e);
+      if (e instanceof CutShort) count(e.usage);
+      const msg = ctl.signal.aborted ? 'Stopped.' : p.friendly(e, model);
       reply.error = msg;
-      console.error('[mentor]', scrub(e instanceof Error ? e.message : String(e)));
+      if (!ctl.signal.aborted) console.error('[mentor]', scrub(e instanceof Error ? e.message : String(e)));
       send({ type: 'error', message: msg });
     } finally {
-      t.busy = false;
+      thread.busy = false;
       res.end();
     }
   });

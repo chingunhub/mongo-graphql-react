@@ -27,7 +27,12 @@ export interface Progress {
   items: Record<string, ItemProgress>;
   lessons: Record<string, { doneAt: string }>;
   workspaces: Record<string, { files: Files; updatedAt: string }>;
-  settings: { unlockAll: boolean; language?: Language };
+  settings: {
+    unlockAll: boolean;
+    language?: Language;
+    /** The mentor provider and model last used. Never the key. */
+    mentor?: { provider: string; model?: string };
+  };
   /** Spaced review, kept apart from pass or fail. */
   review: { entries: Record<string, ReviewEntry>; restedOn?: string };
   lastVisited?: string;

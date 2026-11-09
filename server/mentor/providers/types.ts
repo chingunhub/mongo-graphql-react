@@ -1,0 +1,101 @@
+// What the routes need from a model provider. The routes own the tool loop, the threads and
+// the stream to the browser; a provider owns its SDK, its request shape and its prices.
+
+/** What happened on the way to an answer, in order: thinking summaries, progress notes, tool calls. */
+export type StepKind = 'thinking' | 'note' | 'tool';
+
+export interface Sink {
+  /** Answer text, streamed as it arrives. */
+  text(delta: string): void;
+  /** A step line; append adds to the last step of the same kind. */
+  step(kind: StepKind, text: string, append?: boolean): void;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  /** JSON text, as tools.ts runTool expects. */
+  args: string;
+}
+
+export interface RoundUsage {
+  /** USD for this round, or null when the model's price is unknown. */
+  cost: number | null;
+  input?: number;
+  cached?: number;
+  output?: number;
+  reasoning?: number;
+  /** Why the provider says the cache missed, when it says so. */
+  cacheMiss?: string;
+}
+
+export interface RoundResult {
+  calls: ToolCall[];
+  usage: RoundUsage;
+}
+
+export interface Turn {
+  /** The open item's context, sent once at the start of a thread. */
+  context?: string;
+  /** A fresh progress note, sent when it changed since the last turn. */
+  note?: string;
+  message: string;
+  effort: string;
+}
+
+/** One chat thread's provider-side history. */
+export interface Conversation {
+  readonly model: string;
+  addTurn(turn: Turn): void;
+  /** One request: streams into the sink, appends the reply to the history, returns its tool calls. */
+  round(sink: Sink, signal: AbortSignal): Promise<RoundResult>;
+  addToolResults(results: { id: string; output: string }[]): void;
+  /** Rough size of the history in characters, for the input cap. */
+  size(): number;
+}
+
+/** A provider with a key in hand. */
+export interface Connection {
+  /** Chat models this key can use, best first. Also proves the key works. */
+  listModels(): Promise<string[]>;
+  conversation(model: string, threadKey: string): Conversation;
+}
+
+export interface MentorProvider {
+  id: ProviderId;
+  name: string;
+  /** Shown in the key field. */
+  keyPlaceholder: string;
+  defaultModel: string;
+  /** Offered before the key is checked, and kept at the top of the list after. */
+  suggestedModels: string[];
+  efforts: readonly string[];
+  defaultEffort: string;
+  connect(key: string): Connection;
+  /** A message safe to show the learner. Never the provider's raw auth error, which can echo the key. */
+  friendly(e: unknown, model?: string): string;
+}
+
+export type ProviderId = 'anthropic' | 'openai';
+
+export const scrub = (s: string) => s.replace(/sk-[A-Za-z0-9_*\-]{6,}/g, '[key]');
+
+/** USD per million tokens. */
+export interface Price {
+  input: number;
+  cached: number;
+  cacheWrite: number;
+  output: number;
+}
+
+export const usd = (tokens: number, perMillion: number) => (tokens * perMillion) / 1e6;
+
+/** A round that failed after it was billed (cut short, refused), so the routes still count its cost. */
+export class CutShort extends Error {
+  constructor(
+    message: string,
+    readonly usage: RoundUsage,
+  ) {
+    super(message);
+  }
+}

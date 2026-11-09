@@ -1790,10 +1790,16 @@ body.dragging-y * {
 .mentor-head .spacer {
   flex: 1;
 }
-.mentor-model {
-  color: var(--text-faint);
+.mentor-pick {
+  min-width: 0;
+  max-width: 220px;
   font-size: 12px;
   font-family: var(--mono);
+  padding: 3px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
 }
 .mentor-key,
 .mentor-note {
@@ -1805,7 +1811,8 @@ body.dragging-y * {
   flex-direction: column;
   gap: 8px;
 }
-.mentor-key input {
+.mentor-key input[type="password"],
+.mentor-field select {
   font-family: var(--mono);
   padding: 8px;
   border: 1px solid var(--line-strong);
@@ -1880,6 +1887,41 @@ body.dragging-y * {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.mentor-key p {
+  margin: 0;
+}
+.mentor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.mentor-field select {
+  font: inherit;
+  font-size: 13px;
+}
+.mentor-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+.mentor-check input {
+  margin-top: 3px;
+}
+.mentor-check small {
+  display: block;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.mentor-key-actions {
+  display: flex;
+  gap: 8px;
+}
+.mentor-notice {
+  margin: 8px 12px 0;
 }
 .mentor-actions select {
   font: inherit;
