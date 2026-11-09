@@ -23,6 +23,7 @@ import {
 } from './providers/types.js';
 import { loadThread, removeAllThreads, removeThread, writeThread, type DisplayMessage } from './threads.js';
 import { runTool, toolSpecs, type MentorDeps } from './tools.js';
+import { mountVoice } from './voice.js';
 
 const PROVIDERS: Record<ProviderId, MentorProvider> = { anthropic: anthropicProvider, openai: openaiProvider };
 const ORDER: ProviderId[] = ['anthropic', 'openai'];
@@ -321,6 +322,33 @@ export function mountMentor(app: Express, deps: MentorDeps) {
       return fail(res, 500, mentorError('deleteFailed', `Couldn't delete the saved conversations: ${detail}`, { detail }));
     }
     res.json({ ok: true });
+  });
+
+  mountVoice(app, {
+    deps,
+    openai: () => keys.get('openai')?.conn ?? null,
+    backendModel: () => {
+      const p = prefs();
+      return p.provider === 'openai' ? p.model : openaiProvider.defaultModel;
+    },
+    recent: (item) => findThread('openai', scopeOf(item))?.display.slice(-6) ?? [],
+    saveTurns(item, turns) {
+      const scope = scopeOf(item);
+      let t = findThread('openai', scope);
+      if (!t) {
+        t = emptyThread('openai', scope);
+        threads.set(threadId('openai', scope), t);
+      }
+      // V0 keeps the call in the thread on screen only. Feeding it to the text chat's history is V2.
+      t.display.push(...turns);
+      t.lastItem = item.key;
+      persist(t);
+    },
+    spend(cost) {
+      if (cost === null) session.unknown = true;
+      else session.cost += cost;
+      session.replies++;
+    },
   });
 
   app.post('/api/mentor/chat', async (req, res) => {

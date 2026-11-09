@@ -20,6 +20,65 @@ interface Msg {
   moved?: string;
   /** Token counts of the last request, for the cost line's tooltip. Not saved. */
   usage?: string;
+  /** Said out loud in a voice call. */
+  voice?: boolean;
+}
+
+/** A voice call as the server reports it. */
+interface CallView {
+  id: string;
+  seconds: number;
+  maxSeconds: number;
+  voiceCost: number;
+  backendCost: number | null;
+  cost: number | null;
+  backend: string;
+  tools: string[];
+  ended: string | null;
+  error: ServerError | null;
+}
+interface Call {
+  phase: 'connecting' | 'live' | 'ended';
+  id?: string;
+  /** What was said so far, from the call's data channel. Saved into the thread when it ends. */
+  turns: { role: 'user' | 'assistant'; text: string }[];
+  seconds: number;
+  muted: boolean;
+  view?: CallView;
+  reason?: string;
+  error?: string;
+}
+
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+/** Waits until the browser has gathered its network candidates, so the offer is complete. */
+function iceGathered(pc: RTCPeerConnection, ms = 3000) {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      if (pc.iceGatheringState !== 'complete') return;
+      pc.removeEventListener('icegatheringstatechange', done);
+      resolve();
+    };
+    pc.addEventListener('icegatheringstatechange', done);
+    setTimeout(resolve, ms);
+  });
+}
+
+function endedText(reason: string | undefined, maxSeconds = 600) {
+  const min = Math.round(maxSeconds / 60);
+  switch (reason) {
+    case 'cap':
+      return t('mentor.voice.endedCap', { min });
+    case 'idle':
+      return t('mentor.voice.endedIdle');
+    case 'expired':
+      return t('mentor.voice.endedExpired');
+    case 'connection_lost':
+      return t('mentor.voice.endedLost');
+    default:
+      return t('mentor.voice.ended');
+  }
 }
 interface ProviderStatus {
   id: ProviderId;
@@ -318,6 +377,10 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
   }));
   const abortRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const [call, setCall] = useState<Call | null>(null);
+  const rtc = useRef<{ pc: RTCPeerConnection; stream: MediaStream; audio: HTMLAudioElement; id?: string } | null>(null);
+  const inCall = !!call && call.phase !== 'ended';
+  const locked = busy || inCall;
 
   const loadStatus = () => json<Status>('/api/mentor/status').then(setStatus, () => setFailed(true));
   useEffect(() => {
@@ -344,7 +407,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
   // keeps the conversation on screen. A reply still streaming finishes into the thread it started in.
   const want = item && provider ? `${provider.id}|${item.scope}` : '';
   useEffect(() => {
-    if (busy || want === loaded) return;
+    if (locked || want === loaded) return;
     setLoaded(want);
     setMessages([]);
     setLastItem(null);
@@ -356,11 +419,28 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
       },
       () => {},
     );
-  }, [want, busy]);
+  }, [want, locked]);
 
+  // Stick to the bottom like a chat app: new text keeps the log at the bottom while the learner is
+  // there, and leaves it alone once they scroll up to read something.
+  const logRef = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const toBottom = () => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
+  const onLogScroll = () => {
+    const el = logRef.current;
+    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages, view]);
+    if (pinned.current) toBottom();
+  }, [messages, call?.turns, call?.view?.tools.length, call?.phase]);
+  // Another thread, or back from the settings: start at the bottom.
+  useEffect(() => {
+    pinned.current = true;
+    toBottom();
+  }, [view, loaded]);
 
   useEffect(() => {
     if (!busy) return;
@@ -449,6 +529,8 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     const message = (text ?? draft).trim();
     if (!message || !item || busy || !provider) return;
     if (text === undefined) setDraft('');
+    // Sending is a sign of being at the conversation's end: follow the reply.
+    pinned.current = true;
     setBusy(true);
     setNotice('');
     const moved = messages.length > 0 && !!lastItem && lastItem !== item.key;
@@ -524,6 +606,152 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     }
   }
 
+  /** Stops the microphone and the connection. The server saves the call when OpenAI closes it. */
+  function hangUp() {
+    const r = rtc.current;
+    rtc.current = null;
+    if (!r) return;
+    r.stream.getTracks().forEach((tr) => tr.stop());
+    r.pc.close();
+    r.audio.srcObject = null;
+  }
+
+  /** After a call: reload the thread, which now holds what was said. */
+  function callEnded(reason?: string) {
+    hangUp();
+    setCall((c) => (c ? { ...c, phase: 'ended', reason: c.reason ?? reason } : c));
+    void loadStatus();
+    if (!item || !provider) return;
+    const url = threadUrl(item.key, 'openai');
+    setTimeout(() => {
+      json<{ messages: Msg[]; lastItem: string | null }>(url).then(
+        (r) => {
+          if (provider.id === 'openai') setMessages(r.messages);
+          setCall((c) => (c && c.phase === 'ended' ? { ...c, turns: [] } : c));
+        },
+        () => {},
+      );
+    }, 1500);
+  }
+
+  function onCallEvent(ev: { type: string; [k: string]: unknown }) {
+    if (ev.type === 'session.input_transcript.delta' || ev.type === 'session.output_transcript.delta') {
+      const role = ev.type === 'session.input_transcript.delta' ? 'user' : 'assistant';
+      const delta = String(ev.delta ?? '');
+      setCall((c) => {
+        if (!c) return c;
+        const turns = [...c.turns];
+        const last = turns.at(-1);
+        if (last?.role === role) turns[turns.length - 1] = { role, text: last.text + delta };
+        else turns.push({ role, text: delta });
+        return { ...c, turns };
+      });
+    } else if (ev.type === 'session.started') {
+      setCall((c) => (c && c.phase === 'connecting' ? { ...c, phase: 'live' } : c));
+    } else if (ev.type === 'session.usage.updated') {
+      const s = Number((ev.usage as { seconds?: number })?.seconds ?? 0);
+      setCall((c) => (c ? { ...c, seconds: Math.max(c.seconds, s) } : c));
+    } else if (ev.type === 'session.closed') {
+      callEnded(String(ev.reason ?? ''));
+    }
+  }
+
+  async function startCall() {
+    if (!item || locked) return;
+    setNotice('');
+    pinned.current = true;
+    setCall({ phase: 'connecting', turns: [], seconds: 0, muted: false });
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (e) {
+      const name = (e as Error).name;
+      const error = name === 'NotFoundError' ? t('mentor.voice.noMic') : t('mentor.voice.micBlocked');
+      setCall({ phase: 'ended', turns: [], seconds: 0, muted: false, error });
+      return;
+    }
+    const pc = new RTCPeerConnection();
+    const audio = new Audio();
+    audio.autoplay = true;
+    rtc.current = { pc, stream, audio };
+    try {
+      stream.getTracks().forEach((tr) => pc.addTrack(tr, stream));
+      pc.ontrack = (e) => {
+        audio.srcObject = e.streams[0];
+      };
+      // The events channel has to exist before the offer.
+      const channel = pc.createDataChannel('oai-events');
+      channel.onmessage = (m) => {
+        try {
+          onCallEvent(JSON.parse(String(m.data)));
+        } catch {
+          /* not JSON: ignore */
+        }
+      };
+      await pc.setLocalDescription(await pc.createOffer());
+      await iceGathered(pc);
+      const r = await json<{ id: string; sdp: string }>('/api/mentor/voice/session', {
+        method: 'POST',
+        body: JSON.stringify({ itemKey: item.key, sdp: pc.localDescription?.sdp, effort: efforts.openai ?? 'medium' }),
+      });
+      if (rtc.current) rtc.current.id = r.id;
+      setCall((c) => (c ? { ...c, id: r.id } : c));
+      await pc.setRemoteDescription({ type: 'answer', sdp: r.sdp });
+    } catch (e) {
+      const id = rtc.current?.id;
+      hangUp();
+      if (id) void json('/api/mentor/voice/end', { method: 'POST', body: JSON.stringify({ id }) }).catch(() => {});
+      setCall({ phase: 'ended', turns: [], seconds: 0, muted: false, error: (e as Error).message });
+    }
+  }
+
+  async function endCall() {
+    const id = rtc.current?.id ?? call?.id;
+    hangUp();
+    if (!id) return setCall((c) => (c ? { ...c, phase: 'ended' } : c));
+    const v = await json<CallView>('/api/mentor/voice/end', { method: 'POST', body: JSON.stringify({ id }) }).catch(
+      () => null,
+    );
+    setCall((c) => (c ? { ...c, view: v ?? c.view, reason: 'close_requested' } : c));
+    callEnded('close_requested');
+  }
+
+  function toggleMute() {
+    const track = rtc.current?.stream.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    setCall((c) => (c ? { ...c, muted: !track.enabled } : c));
+  }
+
+  // While a call runs, the server's view adds the tool lines and the backend model's cost.
+  useEffect(() => {
+    if (!call?.id || call.phase === 'ended') return;
+    const id = call.id;
+    const tick = setInterval(() => {
+      json<CallView>(`/api/mentor/voice/session?id=${encodeURIComponent(id)}`).then(
+        (v) => {
+          setCall((c) => (c && c.id === id ? { ...c, view: v, seconds: Math.max(c.seconds, v.seconds) } : c));
+          if (v.ended) callEnded(v.ended);
+        },
+        () => {},
+      );
+    }, 2000);
+    return () => clearInterval(tick);
+  }, [call?.id, call?.phase]);
+
+  // Closing the panel ends the call: idle voice time still bills.
+  useEffect(
+    () => () => {
+      const id = rtc.current?.id;
+      hangUp();
+      if (id) void fetch('/api/mentor/voice/end', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+    },
+    [],
+  );
+
+  const openaiKey = !!status?.providers.find((p) => p.id === 'openai')?.hasKey;
   const unknownCost = messages.some((m) => m.cost === null);
   const total = messages.reduce((s, m) => s + (m.cost ?? 0), 0);
   const withKeys = status?.providers.filter((p) => p.hasKey) ?? [];
@@ -540,7 +768,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
             className="mentor-pick"
             aria-label={t('mentor.model')}
             value={`${status.provider}|${model}`}
-            disabled={busy}
+            disabled={locked}
             onChange={(e) => {
               const [p, m] = e.target.value.split('|') as [ProviderId | 'add', string];
               if (p === 'add') setAdding(m as ProviderId);
@@ -567,7 +795,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
         )}
         <div className="spacer" />
         {ready && (
-          <button className="btn small" onClick={newChat} disabled={busy || !messages.length}>
+          <button className="btn small" onClick={newChat} disabled={locked || !messages.length}>
             {t('mentor.newChat')}
           </button>
         )}
@@ -616,7 +844,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
       ) : (
         <>
           {notice && <p className="mentor-error mentor-notice">{notice}</p>}
-          <div className="mentor-log">
+          <div className="mentor-log" ref={logRef} onScroll={onLogScroll}>
             {!messages.length && (
               <div className="mentor-empty">
                 <p className="mentor-note">{item.kind === 'lesson' ? t('mentor.askLesson') : t('mentor.askTask')}</p>
@@ -633,7 +861,8 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
               return (
                 <div key={i} className="mentor-msg-wrap">
                   {m.moved && <div className="mentor-moved">{t('mentor.movedTo', { title: m.moved })}</div>}
-                  <div className={'mentor-msg ' + m.role}>
+                  <div className={'mentor-msg ' + m.role + (m.voice ? ' voice' : '')}>
+                    {m.voice && <div className="mentor-voice-tag">🎙 {t('mentor.voice.said')}</div>}
                     {m.steps && <Steps steps={m.steps} live={live && !m.text} />}
                     {m.role === 'user' ? (
                       <p>{m.text}</p>
@@ -654,8 +883,76 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
                 </div>
               );
             })}
+            {call && call.turns.length > 0 && (
+              <>
+                {call.turns.map((tu, i) => (
+                  <div key={`call-${i}`} className="mentor-msg-wrap">
+                    <div className={'mentor-msg voice ' + tu.role}>
+                      <p>{tu.text}</p>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+            {call?.view?.tools.length ? (
+              <div className="mentor-call-tools">
+                {call.view.tools.map((line, i) => (
+                  <div key={i} className="mentor-tool">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <div ref={endRef} />
           </div>
+          {call && (
+            <div className={'mentor-call' + (inCall ? ' live' : '')}>
+              <div className="mentor-call-row">
+                <b>
+                  {call.phase === 'connecting'
+                    ? t('mentor.voice.connecting')
+                    : call.phase === 'live'
+                      ? `● ${t('mentor.voice.live')} ${clock(call.seconds)}`
+                      : call.error
+                        ? ''
+                        : endedText(call.reason, call.view?.maxSeconds)}
+                </b>
+                <div className="spacer" />
+                {inCall && (
+                  <>
+                    <button className="btn small" onClick={toggleMute} disabled={call.phase !== 'live'}>
+                      {call.muted ? t('mentor.voice.unmute') : t('mentor.voice.mute')}
+                    </button>
+                    <button className="btn small danger" onClick={() => void endCall()}>
+                      {t('mentor.voice.end')}
+                    </button>
+                  </>
+                )}
+                {!inCall && (
+                  <button className="icon-btn" onClick={() => setCall(null)} aria-label={t('mentor.close')}>
+                    ✕
+                  </button>
+                )}
+              </div>
+              {call.error && <p className="mentor-error">{call.error}</p>}
+              {call.view?.error && <p className="mentor-error">{errorText(call.view.error)}</p>}
+              {(call.view || call.seconds > 0) && (
+                <div className="mentor-meta">
+                  {t('mentor.voice.cost', {
+                    time: clock(call.seconds),
+                    voice: money((call.seconds / 60) * 0.05),
+                    backend: call.view?.backend ?? '',
+                    backendCost: money(call.view ? call.view.backendCost : 0),
+                  })}
+                </div>
+              )}
+              {inCall && (
+                <div className="mentor-foot">
+                  {t('mentor.voice.note')} {t('mentor.voice.limit', { min: Math.round((call.view?.maxSeconds ?? 600) / 60) })}
+                </div>
+              )}
+            </div>
+          )}
           {(total > 0 || unknownCost) && (
             <div className="mentor-meta">
               {t('mentor.thisChat', { cost: money(total) })}
@@ -699,8 +996,19 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
                   {t('mentor.stop')}
                 </button>
               ) : (
-                <button className="btn primary small" disabled={!draft.trim()}>
+                <button className="btn primary small" disabled={!draft.trim() || inCall}>
                   {t('mentor.send')}
+                </button>
+              )}
+              {openaiKey && !inCall && (
+                <button
+                  type="button"
+                  className="btn small"
+                  onClick={() => void startCall()}
+                  disabled={busy}
+                  title={t('mentor.voice.talkTitle')}
+                >
+                  🎙 {t('mentor.voice.talk')}
                 </button>
               )}
             </div>

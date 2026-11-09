@@ -1,5 +1,7 @@
 // What the routes need from a model provider. The routes own the tool loop, the threads and
 // the stream to the browser; a provider owns its SDK, its request shape and its prices.
+import type { LiveCreateParams, LiveCreateResponse } from 'openai/resources/live/live';
+import type { SidebandWS } from 'openai/resources/live/sideband/ws';
 import type { ToolSpec } from '../tools.js';
 
 /** What happened on the way to an answer, in order: thinking summaries, progress notes, tool calls. */
@@ -66,6 +68,16 @@ export interface Connection {
   listModels(): Promise<string[]>;
   /** A new conversation, or one picked up from what save() returned. */
   conversation(model: string, threadKey: string, saved?: unknown): Conversation;
+  /** Voice sessions (GPT-Live), OpenAI only. The key stays inside, like everywhere else. */
+  voice?: VoiceLink;
+}
+
+/** What voice.ts needs from the OpenAI SDK, with the learner's key already in it. */
+export interface VoiceLink {
+  create(body: LiveCreateParams): Promise<LiveCreateResponse>;
+  /** The server's own connection to a running session: tool calls, transcripts, usage. */
+  attach(sessionId: string): SidebandWS;
+  hangup(sessionId: string): Promise<void>;
 }
 
 export interface MentorProvider {

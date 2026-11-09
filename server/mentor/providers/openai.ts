@@ -1,5 +1,6 @@
 // OpenAI through the Responses API. Moved from the Phase 0 spike in routes.ts.
 import OpenAI from 'openai';
+import { SidebandWS } from 'openai/resources/live/sideband/ws';
 import type { ResponseInputItem, Response as OpenAIResponse } from 'openai/resources/responses/responses';
 import { MENTOR_INSTRUCTIONS } from '../prompt.js';
 import type { ToolSpec } from '../tools.js';
@@ -29,7 +30,8 @@ const PRICES: [RegExp, Price][] = [[/^gpt-6\.1-terra\b/, { input: 1, cached: 0.0
 let summaries = process.env.FORGE_MENTOR_SUMMARIES !== '0';
 export const openaiSummaries = () => summaries;
 
-function costOf(model: string, usage: OpenAIResponse['usage']): number | null {
+/** USD for one response's usage, or null when the model's price isn't known. Voice uses it for Terra's share. */
+export function costOf(model: string, usage: OpenAIResponse['usage']): number | null {
   const price = PRICES.find(([re]) => re.test(model))?.[1];
   if (!usage) return 0;
   if (!price) return null;
@@ -208,6 +210,11 @@ export const openaiProvider: MentorProvider = {
         return [...openaiProvider.suggestedModels.filter((m) => ids.includes(m)), ...ids.filter((m) => !openaiProvider.suggestedModels.includes(m))];
       },
       conversation: (model, threadKey, saved) => new OpenAIConversation(client, model, threadKey, saved),
+      voice: {
+        create: (body) => client.live.create(body, { timeout: 30_000 }),
+        attach: (sessionId) => new SidebandWS(client, { session_id: sessionId }),
+        hangup: (sessionId) => client.live.sessions.hangup(sessionId, { timeout: 10_000 }),
+      },
     };
   },
 

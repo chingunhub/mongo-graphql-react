@@ -24,6 +24,8 @@ export interface DisplayMessage {
   errorVars?: Record<string, string>;
   /** On a learner message in a project thread: the step they had moved on to, by title. */
   moved?: string;
+  /** Said out loud in a voice call, not typed. */
+  voice?: boolean;
 }
 
 export interface SavedThread {

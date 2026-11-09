@@ -2107,3 +2107,36 @@ body.dragging-y * {
   .topbar > .mentor-btn { grid-column: 5 / 6; grid-row: 1; justify-self: end; }
   .shell .mentor-panel { top: 88px; }
 }
+.mentor-msg.voice.user,
+.mentor-msg.voice.assistant {
+  border-left: 2px solid var(--forge);
+}
+.mentor-voice-tag {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.mentor-call-tools {
+  padding: 0 4px;
+}
+.mentor-call {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+}
+.mentor-call.live {
+  background: var(--forge-soft);
+}
+.mentor-call-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mentor-call-row .spacer {
+  flex: 1;
+}
+.mentor-call .mentor-meta,
+.mentor-call .mentor-foot {
+  padding: 0;
+}
