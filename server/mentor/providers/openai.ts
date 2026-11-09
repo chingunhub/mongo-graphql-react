@@ -5,6 +5,7 @@ import { MENTOR_INSTRUCTIONS } from '../prompt.js';
 import type { ToolSpec } from '../tools.js';
 import {
   CutShort,
+  mentorError,
   scrub,
   usd,
   type Connection,
@@ -178,7 +179,8 @@ class OpenAIConversation implements Conversation {
     if (final.status === 'incomplete') {
       // Answer any calls in the cut-short reply, or the thread's next request is rejected.
       this.addToolResults(calls.map((c) => ({ id: c.call_id, output: 'Not run: the reply was cut short.' })));
-      throw new CutShort(`The reply was cut short (${final.incomplete_details?.reason ?? 'unknown reason'}).`, usage);
+      const reason = final.incomplete_details?.reason ?? 'unknown reason';
+      throw new CutShort(mentorError('cutShort', `The reply was cut short (${reason}).`, { reason }), usage);
     }
     return { calls: calls.map((c) => ({ id: c.call_id, name: c.name, args: c.arguments })), usage };
   }
@@ -210,19 +212,26 @@ export const openaiProvider: MentorProvider = {
   },
 
   friendly(e, model) {
-    if (e instanceof OpenAI.APIUserAbortError) return 'Stopped.';
-    if (e instanceof OpenAI.APIConnectionError) return "Couldn't reach OpenAI. Check the internet connection.";
+    const provider = 'OpenAI';
+    const m = model ?? 'that model';
+    if (e instanceof OpenAI.APIUserAbortError) return mentorError('stopped', 'Stopped.');
+    if (e instanceof OpenAI.APIConnectionError)
+      return mentorError('offline', "Couldn't reach OpenAI. Check the internet connection.", { provider });
     if (e instanceof OpenAI.APIError) {
       if (e.status === 400 && /effort/.test(e.param ?? ''))
-        return `${model ?? 'This model'} doesn't take that reasoning effort. Pick another one and send again.`;
-      if (e.status === 401) return 'OpenAI rejected the key.';
-      if (e.status === 403) return `This key isn't allowed to use ${model ?? 'that model'}.`;
-      if (e.status === 404) return `OpenAI doesn't offer ${model ?? 'that model'} to this key.`;
+        return mentorError('effort', `${m} doesn't take that reasoning effort. Pick another one and send again.`, { model: m });
+      if (e.status === 401) return mentorError('badKey', 'OpenAI rejected the key.', { provider });
+      if (e.status === 403) return mentorError('noAccess', `This key isn't allowed to use ${m}.`, { model: m });
+      if (e.status === 404) return mentorError('noModel', `OpenAI doesn't offer ${m} to this key.`, { provider, model: m });
+      // An account with no credit left also answers 429, with its own code.
+      if (e.status === 429 && e.code === 'insufficient_quota')
+        return mentorError('noCredit', 'The OpenAI account is out of credit. Add some under Billing on platform.openai.com, then send again.', { provider, page: 'platform.openai.com' });
       if (e.status === 429)
-        return 'OpenAI said slow down or out of credit (429). Check the usage limits on the OpenAI account.';
-      if (e.status && e.status >= 500) return 'OpenAI is having trouble right now. Try again in a minute.';
-      return scrub(`OpenAI refused the request (${e.status ?? '?'}): ${e.message}`);
+        return mentorError('rateLimit', 'OpenAI said slow down (429). Wait a minute and send again.', { provider });
+      if (e.status && e.status >= 500)
+        return mentorError('busy', 'OpenAI is busy or having trouble right now. Try again in a minute.', { provider });
+      return mentorError('other', scrub(`OpenAI refused the request (${e.status ?? '?'}): ${e.message}`));
     }
-    return scrub((e as Error)?.message ?? String(e));
+    return mentorError('other', scrub((e as Error)?.message ?? String(e)));
   },
 };

@@ -65,6 +65,17 @@ powershell -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
 
 Your progress is saved in the `data` folder, on your computer only.
 
+## The AI mentor (optional)
+
+The **Mentor** button opens a chat about whatever lesson or exercise you have open. It nudges before it tells: it asks what you've tried, points you at the right file or test, and only shows more when you're stuck. It never edits your files, and running the tests from the chat doesn't count as an attempt. It won't read the finished solution until you've passed the exercise or tried it three times, the same rule as the **Solution** tab.
+
+It's off until you add your own API key from [OpenAI](https://platform.openai.com/api-keys) or [Anthropic](https://console.anthropic.com/settings/keys) in the mentor's settings. Here's what happens to the key and your work:
+
+- **The key** stays in the app's memory and is forgotten when the server stops. If you tick **Remember on this computer**, it's saved encrypted with your Windows account (DPAPI) or in the Mac Keychain. It's never written to your progress, the progress export, the logs or the chat history, and **Forget** removes it.
+- **What's sent**, only to the provider you picked, only when you send a message: the open lesson or exercise, the files the mentor asks to read, test results and a short note on your progress.
+- **Conversations** are kept in `data/mentor` on your computer. They're left out of the progress export, and you can delete them from the settings.
+- **Cost** goes to your own account. With GPT-6.1 Terra, the first message about an item cost 0.3–0.7¢ in our tests and a follow-up under 0.2¢. The panel shows what the session has cost so far.
+
 ## Good to know
 
 The sandbox runs your code as a normal program with your own permissions. That's fine for your own code on your own computer, and it's why the course isn't hosted. Don't paste in code you don't trust.

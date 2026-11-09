@@ -19,6 +19,9 @@ export interface DisplayMessage {
   /** USD; null when the model's price isn't known or the reply was stopped. */
   cost?: number | null;
   error?: string;
+  /** The error's code and vars, so the panel shows it in the learner's language. See MentorError. */
+  errorCode?: string;
+  errorVars?: Record<string, string>;
   /** On a learner message in a project thread: the step they had moved on to, by title. */
   moved?: string;
 }

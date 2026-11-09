@@ -11,6 +11,7 @@ import { MENTOR_INSTRUCTIONS } from '../prompt.js';
 import type { ToolSpec } from '../tools.js';
 import {
   CutShort,
+  mentorError,
   scrub,
   usd,
   type Connection,
@@ -162,12 +163,15 @@ class AnthropicConversation implements Conversation {
       this.pending = calls.map((c) => ({ type: 'tool_result', tool_use_id: c.id, content: 'Not run.', is_error: true }));
       if (stop === 'refusal') {
         const why = msg.stop_details?.explanation;
-        throw new CutShort(scrub(`The model declined to continue${why ? `: ${why}` : '.'}`), usage);
+        throw new CutShort(mentorError('other', scrub(`The model declined to continue${why ? `: ${why}` : '.'}`)), usage);
       }
       if (stop === 'model_context_window_exceeded') {
-        throw new CutShort('This conversation is too long. Start a new one.', usage);
+        throw new CutShort(mentorError('tooLong', 'This conversation is too long. Start a new one.'), usage);
       }
-      throw new CutShort('The reply was cut short (it hit the length limit).', usage);
+      throw new CutShort(
+        mentorError('cutShort', 'The reply was cut short (max_tokens).', { reason: 'max_tokens' }),
+        usage,
+      );
     }
     return { calls: calls.map((c) => ({ id: c.id, name: c.name, args: JSON.stringify(c.input ?? {}) })), usage };
   }
@@ -201,18 +205,26 @@ export const anthropicProvider: MentorProvider = {
   },
 
   friendly(e, model) {
-    if (e instanceof Anthropic.APIUserAbortError) return 'Stopped.';
-    if (e instanceof Anthropic.APIConnectionError) return "Couldn't reach Anthropic. Check the internet connection.";
-    if (e instanceof Anthropic.AuthenticationError) return 'Anthropic rejected the key.';
-    if (e instanceof Anthropic.PermissionDeniedError) return `This key isn't allowed to use ${model ?? 'that model'}.`;
-    if (e instanceof Anthropic.NotFoundError) return `Anthropic doesn't offer ${model ?? 'that model'} to this key.`;
+    const provider = 'Anthropic';
+    const m = model ?? 'that model';
+    if (e instanceof Anthropic.APIUserAbortError) return mentorError('stopped', 'Stopped.');
+    if (e instanceof Anthropic.APIConnectionError)
+      return mentorError('offline', "Couldn't reach Anthropic. Check the internet connection.", { provider });
+    if (e instanceof Anthropic.AuthenticationError) return mentorError('badKey', 'Anthropic rejected the key.', { provider });
+    if (e instanceof Anthropic.PermissionDeniedError)
+      return mentorError('noAccess', `This key isn't allowed to use ${m}.`, { model: m });
+    if (e instanceof Anthropic.NotFoundError)
+      return mentorError('noModel', `Anthropic doesn't offer ${m} to this key.`, { provider, model: m });
     if (e instanceof Anthropic.RateLimitError)
-      return 'Anthropic said slow down (429). Wait a minute, or check the limits on the Anthropic Console.';
+      return mentorError('rateLimit', 'Anthropic said slow down (429). Wait a minute and send again.', { provider });
     if (e instanceof Anthropic.APIError) {
+      // No credit left comes back as a plain 400 that says so.
+      if (e.status === 400 && /credit balance/i.test(e.message))
+        return mentorError('noCredit', 'The Anthropic account is out of credit. Add some under Billing on console.anthropic.com, then send again.', { provider, page: 'console.anthropic.com' });
       if (e.status === 529 || (e.status && e.status >= 500))
-        return 'Anthropic is busy or having trouble right now. Try again in a minute.';
-      return scrub(`Anthropic refused the request (${e.status ?? '?'}): ${e.message}`);
+        return mentorError('busy', 'Anthropic is busy or having trouble right now. Try again in a minute.', { provider });
+      return mentorError('other', scrub(`Anthropic refused the request (${e.status ?? '?'}): ${e.message}`));
     }
-    return scrub((e as Error)?.message ?? String(e));
+    return mentorError('other', scrub((e as Error)?.message ?? String(e)));
   },
 };

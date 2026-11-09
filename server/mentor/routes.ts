@@ -9,8 +9,11 @@ import { keystore } from './keystore.js';
 import { anthropicProvider } from './providers/anthropic.js';
 import { openaiProvider, openaiSummaries } from './providers/openai.js';
 import {
+  Coded,
   CutShort,
+  mentorError,
   scrub,
+  type MentorError,
   type Connection,
   type Conversation,
   type MentorProvider,
@@ -152,6 +155,10 @@ function setPrefs(next: Prefs) {
   saveProgress();
 }
 
+/** A JSON error the panel can translate: see MentorError. */
+const fail = (res: Response, status: number, err: MentorError) =>
+  void res.status(status).json({ error: err.text, code: err.code, ...(err.vars ? { vars: err.vars } : {}) });
+
 /** Mentor routes spend the learner's money, so only this app's own pages may call them. */
 function sameOrigin(req: Request, res: Response, next: NextFunction) {
   const host = req.headers.host ?? '';
@@ -202,31 +209,31 @@ export function mountMentor(app: Express, deps: MentorDeps) {
   app.put('/api/mentor/prefs', (req, res) => {
     const provider = req.body?.provider;
     const model = req.body?.model;
-    if (!isProvider(provider)) return void res.status(400).json({ error: 'Unknown provider.' });
-    if (typeof model !== 'string' || !MODEL_ID.test(model)) return void res.status(400).json({ error: 'Bad model name.' });
+    if (!isProvider(provider)) return fail(res, 400, mentorError('unknownProvider', 'Unknown provider.'));
+    if (typeof model !== 'string' || !MODEL_ID.test(model)) return fail(res, 400, mentorError('badModel', 'Bad model name.'));
     setPrefs({ provider, model });
     res.json({ provider, model });
   });
 
   app.get('/api/mentor/models', async (req, res) => {
     const id = req.query.provider;
-    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
+    if (!isProvider(id)) return fail(res, 400, mentorError('unknownProvider', 'Unknown provider.'));
     const k = keys.get(id);
     if (!k) return void res.json({ models: PROVIDERS[id].suggestedModels });
     try {
       k.models = await k.conn.listModels();
       res.json({ models: k.models });
     } catch (e) {
-      res.status(502).json({ error: PROVIDERS[id].friendly(e) });
+      fail(res, 502, PROVIDERS[id].friendly(e));
     }
   });
 
   app.post('/api/mentor/key', async (req, res) => {
     const id = req.body?.provider;
-    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
+    if (!isProvider(id)) return fail(res, 400, mentorError('unknownProvider', 'Unknown provider.'));
     const p = PROVIDERS[id];
     const key = typeof req.body?.key === 'string' ? req.body.key.trim() : '';
-    if (!key) return void res.status(400).json({ error: `Paste an ${p.name} API key.` });
+    if (!key) return fail(res, 400, mentorError('pasteKey', `Paste an ${p.name} API key.`, { provider: p.name }));
     const remember = req.body?.remember === true;
     const conn = p.connect(key);
     let models: string[];
@@ -234,18 +241,21 @@ export function mountMentor(app: Express, deps: MentorDeps) {
       // Listing models is free and proves the key works.
       models = await conn.listModels();
     } catch (e) {
-      return void res.status(400).json({ error: p.friendly(e) });
+      return fail(res, 400, p.friendly(e));
     }
-    if (!models.length) return void res.status(400).json({ error: `This key can't use any ${p.name} chat model.` });
+    if (!models.length) {
+      return fail(res, 400, mentorError('noChatModel', `This key can't use any ${p.name} chat model.`, { provider: p.name }));
+    }
     let remembered = false;
-    let warning: string | undefined;
+    let warning: MentorError | undefined;
     try {
       if (remember) {
         await keystore.save(id, key);
         remembered = true;
       } else await keystore.remove(id);
     } catch (e) {
-      warning = `The key works, but it wasn't saved: ${scrub((e as Error).message)}`;
+      const detail = scrub((e as Error).message);
+      warning = mentorError('keyNotSaved', `The key works, but it wasn't saved: ${detail}`, { detail });
     }
     keys.set(id, { conn, models, remembered });
     const current = prefs();
@@ -256,12 +266,13 @@ export function mountMentor(app: Express, deps: MentorDeps) {
 
   app.delete('/api/mentor/key', async (req, res) => {
     const id = req.query.provider;
-    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
+    if (!isProvider(id)) return fail(res, 400, mentorError('unknownProvider', 'Unknown provider.'));
     keys.delete(id);
     try {
       await keystore.remove(id);
     } catch (e) {
-      return void res.status(500).json({ error: `Forgotten for now, but the saved copy couldn't be removed: ${scrub((e as Error).message)}` });
+      const detail = scrub((e as Error).message);
+      return fail(res, 500, mentorError('keyNotRemoved', `Forgotten for now, but the saved copy couldn't be removed: ${detail}`, { detail }));
     }
     res.json(providerStatus(PROVIDERS[id]));
   });
@@ -275,7 +286,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
 
   app.get('/api/mentor/thread', (req, res) => {
     const at = threadOf(req);
-    if (!at) return void res.status(404).json({ error: 'No such item.' });
+    if (!at) return fail(res, 404, mentorError('noItem', 'No such item.'));
     const t = findThread(at.provider, at.scope);
     res.json({
       messages: t?.display ?? [],
@@ -287,25 +298,27 @@ export function mountMentor(app: Express, deps: MentorDeps) {
 
   app.delete('/api/mentor/thread', (req, res) => {
     const at = threadOf(req);
-    if (!at) return void res.status(404).json({ error: 'No such item.' });
+    if (!at) return fail(res, 404, mentorError('noItem', 'No such item.'));
     const id = threadId(at.provider, at.scope);
-    if (threads.get(id)?.busy) return void res.status(409).json({ error: 'Still answering.' });
+    if (threads.get(id)?.busy) return fail(res, 409, mentorError('stillAnswering', 'Still answering the last message.'));
     threads.delete(id);
     try {
       removeThread(at.provider, at.scope);
     } catch (e) {
-      return void res.status(500).json({ error: `Couldn't delete the saved conversation: ${(e as Error).message}` });
+      const detail = scrub((e as Error).message);
+      return fail(res, 500, mentorError('deleteFailed', `Couldn't delete the saved conversation: ${detail}`, { detail }));
     }
     res.json({ ok: true });
   });
 
   app.delete('/api/mentor/threads', (_req, res) => {
-    if ([...threads.values()].some((t) => t.busy)) return void res.status(409).json({ error: 'Still answering.' });
+    if ([...threads.values()].some((t) => t.busy)) return fail(res, 409, mentorError('stillAnswering', 'Still answering the last message.'));
     threads.clear();
     try {
       removeAllThreads();
     } catch (e) {
-      return void res.status(500).json({ error: `Couldn't delete the saved conversations: ${(e as Error).message}` });
+      const detail = scrub((e as Error).message);
+      return fail(res, 500, mentorError('deleteFailed', `Couldn't delete the saved conversations: ${detail}`, { detail }));
     }
     res.json({ ok: true });
   });
@@ -316,18 +329,18 @@ export function mountMentor(app: Express, deps: MentorDeps) {
     const id = req.body?.provider;
     const model = req.body?.model;
     const item: Item | undefined = deps.curriculum().byKey.get(itemKey);
-    if (!item) return void res.status(404).json({ error: 'Open a lesson or exercise first.' });
-    if (!message) return void res.status(400).json({ error: 'Empty message.' });
-    if (!isProvider(id)) return void res.status(400).json({ error: 'Unknown provider.' });
-    if (typeof model !== 'string' || !MODEL_ID.test(model)) return void res.status(400).json({ error: 'Bad model name.' });
+    if (!item) return fail(res, 404, mentorError('openItem', 'Open a lesson or exercise first.'));
+    if (!message) return fail(res, 400, mentorError('emptyMessage', 'Empty message.'));
+    if (!isProvider(id)) return fail(res, 400, mentorError('unknownProvider', 'Unknown provider.'));
+    if (typeof model !== 'string' || !MODEL_ID.test(model)) return fail(res, 400, mentorError('badModel', 'Bad model name.'));
     const p = PROVIDERS[id];
     const k = keys.get(id);
-    if (!k) return void res.status(400).json({ error: `Add an ${p.name} key first.` });
+    if (!k) return fail(res, 400, mentorError('noKey', `Add an ${p.name} key first.`, { provider: p.name }));
     const effort: string = p.efforts.includes(req.body?.effort) ? req.body.effort : p.defaultEffort;
 
     const scope = scopeOf(item);
     let t = findThread(id, scope);
-    if (t?.busy) return void res.status(409).json({ error: 'Still answering the last message.' });
+    if (t?.busy) return fail(res, 409, mentorError('stillAnswering', 'Still answering the last message.'));
     // Another model can't reuse this thread's cache or its reasoning, so a model change starts over.
     const had = t?.conv?.model ?? t?.model;
     if (!t || (had && had !== model)) {
@@ -410,7 +423,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
         if (conv.size() > MAX_HISTORY_CHARS) {
-          throw new Error('This conversation is too long. Start a new one to keep costs down.');
+          throw new Coded(mentorError('tooLong', 'This conversation is too long. Start a new one to keep costs down.'));
         }
         inFlight = true;
         const { calls, usage } = await conv.round(sink, ctl.signal, toolSpecs(item));
@@ -430,7 +443,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
         if (ctl.signal.aborted) break;
         if (reply.text && !reply.text.endsWith('\n')) sink.text('\n\n');
       }
-      if (ctl.signal.aborted) throw new Error('Stopped.');
+      if (ctl.signal.aborted) throw new Coded(mentorError('stopped', 'Stopped.'));
       send({ type: 'done' });
     } catch (e) {
       if (e instanceof CutShort) count(e.usage);
@@ -439,10 +452,16 @@ export function mountMentor(app: Express, deps: MentorDeps) {
         session.unknown = true;
         send({ type: 'usage', cost: null });
       }
-      const msg = ctl.signal.aborted ? 'Stopped.' : p.friendly(e, model);
-      reply.error = msg;
+      const err = ctl.signal.aborted
+        ? mentorError('stopped', 'Stopped.')
+        : e instanceof Coded || e instanceof CutShort
+          ? e.error
+          : p.friendly(e, model);
+      reply.error = err.text;
+      reply.errorCode = err.code;
+      if (err.vars) reply.errorVars = err.vars;
       if (!ctl.signal.aborted) console.error('[mentor]', scrub(e instanceof Error ? e.message : String(e)));
-      send({ type: 'error', message: msg });
+      send({ type: 'error', message: err.text, code: err.code, ...(err.vars ? { vars: err.vars } : {}) });
     } finally {
       thread.busy = false;
       persist(thread);

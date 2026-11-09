@@ -1,6 +1,6 @@
 // The AI mentor's chat drawer. The learner brings an Anthropic or OpenAI key. See docs/mentor/PLAN.md.
 import { useEffect, useRef, useState } from 'react';
-import { t, type StringKey } from '../i18n';
+import { hasString, t, type StringKey } from '../i18n';
 import { Markdown } from './Markdown';
 
 type ProviderId = 'anthropic' | 'openai';
@@ -13,6 +13,9 @@ interface Msg {
   model?: string;
   cost?: number | null;
   error?: string;
+  /** The error's code and vars from the server, so it shows in the current language. */
+  errorCode?: string;
+  errorVars?: Record<string, string>;
   /** On a learner message: the project step they had moved on to. */
   moved?: string;
   /** Token counts of the last request, for the cost line's tooltip. Not saved. */
@@ -62,15 +65,30 @@ const STARTERS: Record<'task' | 'lesson', StringKey[]> = {
 const effortHelp = (e: string) =>
   ['none', 'low', 'medium', 'high', 'xhigh', 'max'].includes(e) ? t(`mentor.effort.${e}` as StringKey) : '';
 
+/** A server error as the server sends it: English text, plus a code and vars to translate it. */
+interface ServerError {
+  error?: string;
+  code?: string;
+  vars?: Record<string, string>;
+}
+
+/** The error in the learner's language, or the server's English when there is no string for its code. */
+function errorText(e: ServerError, fallback = '') {
+  const key = `mentor.err.${e.code}`;
+  return e.code && hasString(key) ? t(key, e.vars ?? {}) : (e.error ?? fallback);
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
     headers: init?.body ? { 'content-type': 'application/json' } : undefined,
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(errorText(body, `HTTP ${res.status}`));
   return body as T;
 }
+
+type KeyAdded = ProviderStatus & { model: string; warning?: ServerError };
 
 const money = (n?: number | null) =>
   n === null ? t('mentor.costUnknown') : n === undefined ? '' : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(3)}`;
@@ -124,7 +142,7 @@ function KeyForm({
 }: {
   status: Status;
   initial: ProviderId;
-  onDone: (p: ProviderStatus & { model: string; warning?: string }) => void;
+  onDone: (p: KeyAdded) => void;
   onCancel?: () => void;
 }) {
   const [provider, setProvider] = useState<ProviderId>(initial);
@@ -139,7 +157,7 @@ function KeyForm({
     setChecking(true);
     setError('');
     try {
-      const r = await json<ProviderStatus & { model: string; warning?: string }>('/api/mentor/key', {
+      const r = await json<KeyAdded>('/api/mentor/key', {
         method: 'POST',
         body: JSON.stringify({ provider, key, remember: canRemember && remember }),
       });
@@ -380,7 +398,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     setStatus({ ...s, provider: next, model: nextModel });
   }
 
-  function keyAdded(p: ProviderStatus & { model: string; warning?: string }) {
+  function keyAdded(p: KeyAdded) {
     setStatus((s) =>
       s
         ? {
@@ -392,7 +410,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
         : s,
     );
     setAdding(null);
-    setNotice(p.warning ?? '');
+    setNotice(p.warning ? errorText(p.warning) : '');
   }
 
   async function forgetKey(id: ProviderId) {
@@ -451,7 +469,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
       });
       if (!res.ok || !res.body) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `HTTP ${res.status}`);
+        throw new Error(errorText(body, `HTTP ${res.status}`));
       }
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = '';
@@ -485,7 +503,8 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
               (ev.reasoning !== undefined ? ` (${ev.reasoning} reasoning)` : '') +
               (ev.cacheMiss ? `. Cache miss: ${ev.cacheMiss}` : '');
             patchLast((m) => ({ ...m, cost: ev.cost, usage }));
-          } else if (ev.type === 'error') patchLast((m) => ({ ...m, error: ev.message }));
+          } else if (ev.type === 'error')
+            patchLast((m) => ({ ...m, error: ev.message, errorCode: ev.code, errorVars: ev.vars }));
         }
       }
     } catch (e) {
@@ -494,6 +513,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
       patchLast((m) => ({
         ...m,
         error: stopped ? t('mentor.stopped') : (e as Error).message,
+        ...(stopped ? { errorCode: 'stopped' } : {}),
         ...(stopped ? { cost: null } : {}),
       }));
     } finally {
@@ -622,7 +642,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
                     ) : live && !m.error ? (
                       <p className="mentor-note">{t('mentor.working', { s: elapsed })}</p>
                     ) : null}
-                    {m.error && <p className="mentor-error">{m.error}</p>}
+                    {m.error && <p className="mentor-error">{errorText({ error: m.error, code: m.errorCode, vars: m.errorVars })}</p>}
                     {m.role === 'assistant' && !live && (m.cost === null || (m.cost ?? 0) > 0) && (
                       <div className="mentor-cost" title={m.usage}>
                         {m.model ? `${m.model} · ` : ''}

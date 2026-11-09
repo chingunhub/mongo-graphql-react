@@ -177,6 +177,27 @@ const en = {
   'mentor.set.deleteAll': 'Delete all conversations',
   'mentor.set.deleteConfirm': "Delete every saved mentor conversation? This can't be undone.",
   'mentor.set.deleted': 'All conversations deleted.',
+  'mentor.err.stopped': 'Stopped.',
+  'mentor.err.offline': "Couldn't reach {provider}. Check the internet connection.",
+  'mentor.err.effort': "{model} doesn't take that reasoning effort. Pick another one and send again.",
+  'mentor.err.badKey': '{provider} rejected the key.',
+  'mentor.err.noAccess': "This key isn't allowed to use {model}.",
+  'mentor.err.noModel': "{provider} doesn't offer {model} to this key.",
+  'mentor.err.noCredit': 'The {provider} account is out of credit. Add some under Billing on {page}, then send again.',
+  'mentor.err.rateLimit': '{provider} said slow down (429). Wait a minute and send again.',
+  'mentor.err.busy': '{provider} is busy or having trouble right now. Try again in a minute.',
+  'mentor.err.tooLong': 'This conversation is too long. Start a new one to keep costs down.',
+  'mentor.err.cutShort': 'The reply was cut short ({reason}).',
+  'mentor.err.pasteKey': 'Paste an {provider} API key.',
+  'mentor.err.noChatModel': "This key can't use any {provider} chat model.",
+  'mentor.err.keyNotSaved': "The key works, but it wasn't saved: {detail}",
+  'mentor.err.keyNotRemoved': "Forgotten for now, but the saved copy couldn't be removed: {detail}",
+  'mentor.err.noItem': 'No such lesson or exercise.',
+  'mentor.err.stillAnswering': 'Still answering the last message.',
+  'mentor.err.deleteFailed': "Couldn't delete the saved conversations: {detail}",
+  'mentor.err.openItem': 'Open a lesson or exercise first.',
+  'mentor.err.emptyMessage': 'Empty message.',
+  'mentor.err.noKey': 'Add an {provider} key first.',
 };
 
 export type StringKey = keyof typeof en;
@@ -361,6 +382,27 @@ const mn: Partial<Record<StringKey, string>> = {
   'mentor.set.deleteAll': 'Бүх яриаг устгах',
   'mentor.set.deleteConfirm': 'Хадгалсан бүх яриаг устгах уу? Буцааж сэргээх боломжгүй.',
   'mentor.set.deleted': 'Бүх яриаг устгалаа.',
+  'mentor.err.stopped': 'Зогсоосон.',
+  'mentor.err.offline': '{provider} руу холбогдож чадсангүй. Интернэтээ шалгаарай.',
+  'mentor.err.effort': '{model} ийм бодох хэмжээ дэмждэггүй. Өөрийг сонгоод дахин илгээ.',
+  'mentor.err.badKey': '{provider} энэ key-г хүлээж авсангүй.',
+  'mentor.err.noAccess': 'Энэ key-ээр {model}-г ашиглах эрх алга.',
+  'mentor.err.noModel': '{provider} дээр энэ key-ээр {model} ашиглах боломжгүй.',
+  'mentor.err.noCredit': '{provider} данс дээр кредит дууссан байна. {page} дээрх Billing хэсгээс нэмээд дахин илгээ.',
+  'mentor.err.rateLimit': '{provider} хүсэлт хэт олон байна гэлээ (429). Нэг минут хүлээгээд дахин илгээ.',
+  'mentor.err.busy': '{provider} одоогоор ачаалалтай эсвэл асуудалтай байна. Нэг минутын дараа дахин оролдоорой.',
+  'mentor.err.tooLong': 'Энэ яриа хэт урт болсон. Зардлаа багасгахын тулд шинэ яриа эхлүүл.',
+  'mentor.err.cutShort': 'Хариулт дутуу тасарлаа ({reason}).',
+  'mentor.err.pasteKey': '{provider} API key-ээ энд тавь.',
+  'mentor.err.noChatModel': 'Энэ key-ээр {provider}-ийн ямар ч chat модель ашиглах боломжгүй.',
+  'mentor.err.keyNotSaved': 'Key ажиллаж байгаа ч хадгалагдсангүй: {detail}',
+  'mentor.err.keyNotRemoved': 'Одоохондоо мартлаа, гэхдээ хадгалсан хуулбарыг устгаж чадсангүй: {detail}',
+  'mentor.err.noItem': 'Ийм хичээл, дасгал алга.',
+  'mentor.err.stillAnswering': 'Өмнөх мессежид хариулсаар байна.',
+  'mentor.err.deleteFailed': 'Хадгалсан яриаг устгаж чадсангүй: {detail}',
+  'mentor.err.openItem': 'Эхлээд хичээл эсвэл дасгал нээ.',
+  'mentor.err.emptyMessage': 'Мессеж хоосон байна.',
+  'mentor.err.noKey': 'Эхлээд {provider} key нэм.',
 };
 
 let language: Language = 'en';
@@ -371,6 +413,9 @@ export function setLanguage(next: Language) {
 }
 
 export const currentLanguage = () => language;
+
+/** Whether there is a string for this key, for keys built at run time. */
+export const hasString = (key: string): key is StringKey => key in en;
 
 export function t(key: StringKey, values: Record<string, string | number> = {}) {
   const text = (language === 'mn' ? mn[key] : undefined) ?? en[key];

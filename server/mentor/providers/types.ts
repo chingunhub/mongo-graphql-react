@@ -80,8 +80,25 @@ export interface MentorProvider {
   defaultEffort: string;
   connect(key: string): Connection;
   /** A message safe to show the learner. Never the provider's raw auth error, which can echo the key. */
-  friendly(e: unknown, model?: string): string;
+  friendly(e: unknown, model?: string): MentorError;
 }
+
+/**
+ * An error the panel can show in the learner's language. The panel looks up mentor.err.<code>
+ * and fills it from vars; text is the English, shown when there is no string for the code.
+ * Code "other" carries a provider's own words, which only exist in English.
+ */
+export interface MentorError {
+  code: string;
+  text: string;
+  vars?: Record<string, string>;
+}
+
+export const mentorError = (code: string, text: string, vars?: Record<string, string>): MentorError => ({
+  code,
+  text,
+  ...(vars ? { vars } : {}),
+});
 
 export type ProviderId = 'anthropic' | 'openai';
 
@@ -100,9 +117,16 @@ export const usd = (tokens: number, perMillion: number) => (tokens * perMillion)
 /** A round that failed after it was billed (cut short, refused), so the routes still count its cost. */
 export class CutShort extends Error {
   constructor(
-    message: string,
+    readonly error: MentorError,
     readonly usage: RoundUsage,
   ) {
-    super(message);
+    super(error.text);
+  }
+}
+
+/** An error the routes raise themselves, already in the learner-facing shape. */
+export class Coded extends Error {
+  constructor(readonly error: MentorError) {
+    super(error.text);
   }
 }
