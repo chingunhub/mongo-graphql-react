@@ -191,14 +191,14 @@ function delegationTools(item: Item) {
 }
 
 /** The item, progress and the end of the text chat, for the start of the call. */
-function startContext(host: VoiceHost, item: Item): string {
+function startContext(host: VoiceHost, item: Item, talk = false): string {
   const recent = host
     .recent(item)
     .filter((m) => m.text.trim())
     .slice(-6)
     .map((m) => `${m.role === 'user' ? 'Learner' : 'Mentor'}: ${m.text.trim().slice(0, 600)}`);
   const parts = [
-    itemContext(host.deps, item),
+    itemContext(host.deps, item, { talk }),
     progressNote(item),
     recent.length ? `# The text chat so far (most recent last)\n${recent.join('\n\n')}` : '',
   ];
@@ -863,11 +863,13 @@ export function mountVoice(app: Express, host: VoiceHost) {
     const effort: Effort = (EFFORTS as readonly string[]).includes(wanted) ? wanted : 'medium';
     const tools = delegationTools(item);
     const context = startContext(host, item);
+    // The voice model gets no hints and no code: anything about the code goes through the backend.
+    const talkContext = startContext(host, item, true);
     const session: LiveCreateParams['session'] = {
       model: VOICE_MODEL,
       instructions: VOICE_INSTRUCTIONS,
       audio: { output: { voice: 'marin' } },
-      input: [{ role: 'developer', content: [{ type: 'input_text', text: context }] }],
+      input: [{ role: 'developer', content: [{ type: 'input_text', text: talkContext }] }],
       delegation: {
         type: 'responses',
         responses: {
@@ -989,12 +991,22 @@ export function mountVoice(app: Express, host: VoiceHost) {
   /** The Nudges switch. Off drops any nudge still waiting. */
   // Experiments only, with FORGE_MENTOR_VOICE_DEBUG=1: trigger server-side messages to the backend.
   if (DEBUG) {
-    app.post('/api/mentor/voice/debug', (req, res) => {
+    app.post('/api/mentor/voice/debug', async (req, res) => {
       const c = calls.get(String(req.body?.id ?? ''));
       if (!c || c.ended) return fail(res, 404, mentorError('noCall', 'No such call.'));
       const text = String(req.body?.text ?? '');
       if (req.body?.op === 'tell') tellBackend(c, text, 'exp_tell');
       else if (req.body?.op === 'react') void react(c, true);
+      else if (req.body?.op === 'speak') {
+        // A scripted learner line, as audio the test page plays into the call.
+        try {
+          const wav = await c.link.speech(text);
+          dbg(c, `debug speak (${wav.length} bytes)`);
+          return void res.json({ wav: wav.toString('base64') });
+        } catch (e) {
+          return fail(res, 502, mentorError('other', scrub((e as Error).message)));
+        }
+      }
       else if (req.body?.op === 'commentary') c.sideband.send({ type: 'session.commentary.append', delegation_id: null, content: text, event_id: 'exp_comm' });
       dbg(c, `debug ${req.body?.op}`);
       res.json({ ok: true });

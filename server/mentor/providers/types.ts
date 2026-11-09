@@ -81,6 +81,8 @@ export interface VoiceLink {
   hangup(sessionId: string): Promise<void>;
   /** One short request outside the call, for a glance at the learner's edit. */
   look(body: ResponseCreateParamsNonStreaming): Promise<OpenAIResponse>;
+  /** Text to speech, for scripted test calls only (FORGE_MENTOR_VOICE_DEBUG=1). WAV bytes. */
+  speech(text: string): Promise<Buffer>;
 }
 
 export interface MentorProvider {

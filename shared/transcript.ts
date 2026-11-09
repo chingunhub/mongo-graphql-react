@@ -28,10 +28,19 @@ const isBackchannel = (s: string) => BACKCHANNEL.test(cleanSpeech(s).replace(/[.
 /**
  * Adds one delta. A learner's "mm" or "okay" said while the mentor is mid-sentence doesn't split
  * the mentor's turn in two: when the mentor carries on, the backchannel is dropped and the
- * sentence joined back together.
+ * sentence joined back together. The end of a learner's question that is transcribed late, after
+ * the mentor has started answering, goes back into the question.
  */
 export function addDelta(turns: SpokenTurn[], role: SpokenTurn['role'], delta: string, start?: number, end?: number) {
   const last = turns.at(-1);
+  if (role === 'user' && last?.role === 'assistant' && !last.kind && start !== undefined && last.start !== undefined && start < last.start) {
+    const prev = turns.at(-2);
+    if (prev?.role === 'user' && !prev.kind) {
+      prev.text += delta;
+      if (end !== undefined) prev.end = Math.max(prev.end ?? end, end);
+      return;
+    }
+  }
   if (role === 'assistant' && last?.role === 'user' && !last.kind) {
     const prev = turns.at(-2);
     const during =

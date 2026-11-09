@@ -215,6 +215,13 @@ export const openaiProvider: MentorProvider = {
         attach: (sessionId) => new SidebandWS(client, { session_id: sessionId }),
         hangup: (sessionId) => client.live.sessions.hangup(sessionId, { timeout: 10_000 }),
         look: (body) => client.responses.create(body, { timeout: 20_000, maxRetries: 0 }),
+        speech: async (text) => {
+          const res = await client.audio.speech.create(
+            { model: 'gpt-4o-mini-tts', voice: 'cedar', input: text, response_format: 'wav' },
+            { timeout: 30_000 },
+          );
+          return Buffer.from(await res.arrayBuffer());
+        },
       },
     };
   },

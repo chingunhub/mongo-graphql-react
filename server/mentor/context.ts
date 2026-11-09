@@ -18,8 +18,12 @@ function testNames(tests: Record<string, string>): string[] {
   return names;
 }
 
-/** The block that opens a conversation. Fixed for the conversation, so it stays in the cached prefix. */
-export function itemContext(deps: MentorDeps, item: Item): string {
+/**
+ * The block that opens a conversation. Fixed for the conversation, so it stays in the cached prefix.
+ * `talk` is the voice model's version: no authored hints and no code. It talks and hands anything
+ * about the code to the backend, which gets the full block, so it can't give an answer away itself.
+ */
+export function itemContext(deps: MentorDeps, item: Item, { talk = false } = {}): string {
   const c = deps.curriculum();
   const mod = c.modules.find((m) => m.id === item.moduleId);
   const head = [
@@ -46,10 +50,13 @@ export function itemContext(deps: MentorDeps, item: Item): string {
     '',
     '## Tests',
     ...testNames(item.tests).map((n) => `- ${n}`),
+  ];
+  if (talk) return parts.filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
+  parts.push(
     '',
     '## Authored hints (private guidance for you)',
     ...item.hints.map((h, i) => `${i + 1}. ${i < shownHints ? '[shown to the learner] ' : '[not shown] '}${h}`),
-  ];
+  );
   let budget = SNAPSHOT_LIMIT;
   const snapshot: string[] = [];
   for (const p of item.focus) {
