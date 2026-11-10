@@ -4,8 +4,8 @@
 export interface SpokenTurn {
   role: 'user' | 'assistant';
   text: string;
-  /** "code": a snippet the mentor put in the panel, not speech. */
-  kind?: 'code';
+  /** "code": a snippet the mentor put in the panel, not speech. "typed": typed by the learner during the call. */
+  kind?: 'code' | 'typed';
   /** Milliseconds from the start of the call. */
   start?: number;
   end?: number;

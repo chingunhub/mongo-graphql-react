@@ -151,6 +151,8 @@ interface Call {
   hintsInCall: number;
   passedAtFirstHint: number;
   section: string;
+  /** Messages the learner typed during the call that the backend hasn't been asked yet. */
+  typed: string[];
   /** A nudge waiting for a quiet moment. */
   nudge: { why: string; text: string } | null;
   lastNudge: number;
@@ -344,6 +346,7 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
         if (!c.pending.get(delegation)?.length) {
           c.backendBusy = false;
           for (const text of c.backendQueue.splice(0)) tellBackend(c, text);
+          askTyped(c);
         }
         void answerCalls(c, delegation);
       }
@@ -396,6 +399,9 @@ function updateTools(c: Call) {
   c.sentTools = names;
   c.sideband.send({ type: 'session.update', session: { delegation: { type: 'responses', responses: { tools: now } } } });
 }
+
+/** The longest typed message a call takes. */
+const MAX_TYPED = 4000;
 
 /** One line of the debug timeline: what happened when, never what was said. */
 function dbg(c: Call, what: string) {
@@ -523,6 +529,40 @@ function tellBackend(c: Call, text: string, eventId?: string) {
   for (const waiting of [...c.backendQueue.splice(0), text]) {
     c.sideband.send({ type: 'response.item.create', event_id: eventId, item: { type: 'message', role: 'developer', content: waiting } });
   }
+}
+
+/**
+ * A message the learner typed during the call. It joins the transcript as their turn, and the
+ * backend answers it like a spoken question: GPT-Live says the answer.
+ */
+function typedMessage(c: Call, text: string) {
+  const now = Date.now();
+  c.turns.push({ role: 'user', kind: 'typed', text });
+  c.lastSpeech = c.lastUser = c.lastActive = now;
+  c.stuckNudged = false;
+  c.nudge = null;
+  c.sayLater = null;
+  c.typed.push(text);
+  note(c, 'typed', `The learner typed this in the chat instead of saying it: "${text}". Treat it as said to you. The answer is being worked out and will arrive for you to say; don't answer it yourself.`);
+  askTyped(c);
+}
+
+/** Hands waiting typed messages to the backend and asks for its answer, once it is free. */
+function askTyped(c: Call) {
+  if (c.ended || !c.typed.length || backendBusy(c)) return;
+  for (const waiting of c.backendQueue.splice(0)) {
+    c.sideband.send({ type: 'response.item.create', item: { type: 'message', role: 'developer', content: waiting } });
+  }
+  for (const text of c.typed.splice(0)) {
+    c.sideband.send({
+      type: 'response.item.create',
+      item: { type: 'message', role: 'user', content: `(Typed in the chat during the call, not spoken.)\n${text}` },
+    });
+  }
+  c.sideband.send({ type: 'response.create' });
+  c.backendBusy = true;
+  c.busySince = Date.now();
+  dbg(c, 'typed message sent to the backend');
 }
 
 /**
@@ -960,6 +1000,7 @@ export function mountVoice(app: Express, host: VoiceHost) {
       backendBusy: false,
       busySince: 0,
       backendQueue: [],
+      typed: [],
       lookBase: {},
       lookAgain: false,
       lastGlance: 0,
@@ -1005,10 +1046,16 @@ export function mountVoice(app: Express, host: VoiceHost) {
     res.json(view(c));
   });
 
-  /** What only the browser knows: the lesson section in view. */
+  /** What only the browser knows: the lesson section in view, and what the learner types. */
   app.post('/api/mentor/voice/event', (req, res) => {
     const c = calls.get(String(req.body?.id ?? ''));
     if (!c || c.ended) return fail(res, 404, mentorError('noCall', 'No such call.'));
+    if (req.body?.type === 'typed') {
+      const text = typeof req.body.text === 'string' ? req.body.text.trim().slice(0, MAX_TYPED) : '';
+      // While the cost question is up the call isn't listening, so nothing would be said back.
+      if (text && !c.asking) typedMessage(c, text);
+      return void res.json({ ok: !!text && !c.asking });
+    }
     const heading = typeof req.body?.heading === 'string' ? req.body.heading.trim().slice(0, 200) : '';
     if (req.body?.type === 'section' && heading && heading !== c.section && c.item.kind === 'lesson') {
       c.section = heading;

@@ -537,7 +537,19 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     setLastItem(null);
   }
 
+  /** In a call, a typed message goes to the call: the mentor answers it out loud. */
+  function sendTyped() {
+    const text = draft.trim();
+    const id = rtc.current?.id;
+    if (!text || !id || call?.phase !== 'live' || call.view?.capAsk != null) return;
+    setDraft('');
+    pinned.current = true;
+    setCall((c) => (c ? { ...c, turns: [...c.turns, { role: 'user', kind: 'typed', text }] } : c));
+    void json('/api/mentor/voice/event', { method: 'POST', body: JSON.stringify({ id, type: 'typed', text }) }).catch(() => {});
+  }
+
   async function send(text?: string) {
+    if (inCall) return void (text === undefined && sendTyped());
     const message = (text ?? draft).trim();
     if (!message || !item || busy || !provider) return;
     if (text === undefined) setDraft('');
@@ -1071,7 +1083,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
             <textarea
               rows={3}
               value={draft}
-              placeholder={t('mentor.placeholder')}
+              placeholder={t(inCall ? 'mentor.voice.placeholder' : 'mentor.placeholder')}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -1098,7 +1110,10 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
                   {t('mentor.stop')}
                 </button>
               ) : (
-                <button className="btn primary small" disabled={!draft.trim() || inCall}>
+                <button
+                  className="btn primary small"
+                  disabled={!draft.trim() || (inCall && (call.phase !== 'live' || call.view?.capAsk != null))}
+                >
                   {t('mentor.send')}
                 </button>
               )}
