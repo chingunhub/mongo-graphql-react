@@ -24,7 +24,7 @@ You don't have to finish everything. The course has three stages, and stopping a
 | --- | --- | --- |
 | **1. Backend** | 0–9 | The goal. A complete GraphQL backend |
 | **2. Full stack** | 10–13 | A stretch. You write real React and finish the app |
-| **3. Real systems** | 14–24 | Take the modules you need, when you need them |
+| **3. Real systems** | 14–25 | Take the modules you need, when you need them |
 
 ## Get started
 
@@ -101,7 +101,7 @@ The sandbox runs your code as a normal program with your own permissions. That's
 
 ## Credits
 
-Module 24, and the parts of modules 15, 18, 19 and 21 that compare Relaydesk with real code, study the open-source [erxes](https://github.com/erxes/erxes) project. Thanks to its maintainers for building in the open.
+Modules 24 and 25, and the parts of modules 15, 18, 19 and 21 that compare Relaydesk with real code, study the open-source [erxes](https://github.com/erxes/erxes) project. Thanks to its maintainers for building in the open.
 
 ## License
 

@@ -1,0 +1,15 @@
+{
+  "title": "Client portals: the customer's side",
+  "part": "Part VII — Into the real codebase",
+  "stage": 3,
+  "summary": "Tell a portal from a portal user from a staff user, carry both through the gateway, guard what a customer may see, and build the small site they sign in to.",
+  "items": [
+    "l1-three-identities",
+    "d1-portal-identity",
+    "l2-portal-resolvers",
+    "d2-my-tickets",
+    "l3-customer-app",
+    "d3-portal-app",
+    "b1-wrong-portal"
+  ]
+}

@@ -28,9 +28,9 @@ function finished(count: number, at = start) {
   return p;
 }
 
-test('the review pool is the 112 lesson quizzes and the 32 drills, without the checkpoints', () => {
-  assert.equal(lessons.flatMap((lesson) => quizzesIn(lesson.body)).length, 112);
-  assert.equal(drills.length, 32);
+test('the review pool is the 121 lesson quizzes and the 35 drills, without the checkpoints', () => {
+  assert.equal(lessons.flatMap((lesson) => quizzesIn(lesson.body)).length, 121);
+  assert.equal(drills.length, 35);
 });
 
 test('nothing comes due until three days after a lesson is finished', () => {

@@ -27,7 +27,7 @@ test('every expansion task exposes its focus files, hints and executable tests',
   const tasks = [...cur.byKey.values()].filter(
     (item): item is TaskItem => item.kind !== 'lesson' && Number(item.moduleId.slice(1)) >= 14,
   );
-  assert.equal(tasks.length, 30);
+  assert.equal(tasks.length, 34);
   for (const task of tasks) {
     const base = taskStart(cur, task);
     assert.ok(task.hints.length >= 2, task.key + ' needs progressive hints');
@@ -73,7 +73,7 @@ test('new lesson visual specifications parse and name supported components', () 
       }
       assert.match(item.body, /```quiz/, item.key + ' must ask for a prediction');
     }
-  assert.equal(lessons, 26);
+  assert.equal(lessons, 29);
   assert.ok(visuals >= 8);
 });
 
@@ -91,6 +91,7 @@ const shared = (...entries: string[]) =>
 // The course speaks about real repos in general. A file joins this list only when it quotes borrowed code.
 const NAMES_ITS_SOURCE = [
   /^content\/m24-erxes-field-guide\//,
+  /^content\/m25-client-portals\//,
   /^content\/m15-tenant-boundaries\/l1-context\.md$/,
   /^content\/m18-service-contracts\/l1-runtime-contracts\.md$/,
   /^content\/m19-background-work\/l1-queues\.md$/,

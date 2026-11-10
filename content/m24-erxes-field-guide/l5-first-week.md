@@ -189,3 +189,6 @@ Think back to Module 1: a Mongoose schema, and a question about whether your cod
 The big codebase you were worried about is just a lot of these small pieces. It's models, context, guards, messages, owners, cleanups. You've written each of them by hand, you've broken most of them on purpose, and you've seen what they look like when they fail at 12:09 on a Friday.
 
 You won't understand all of erxes this month. Nobody does, including the people who've worked on it for years. They just know how to find their way through it, one hop at a time. And now, so do you.
+
+> [!NOTE]
+> One optional module follows: **Client portals**, the customer-facing side of the same system. Take it when a task at work touches a portal.

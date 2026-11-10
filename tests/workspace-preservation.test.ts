@@ -73,7 +73,7 @@ test('worktree runtime cannot match the original broad sandbox cleanup', () => {
 });
 test('old and new project steps remain separate and ordered', () => {
   const c = loadCurriculum();
-  assert.equal(c.modules.length, 25);
+  assert.equal(c.modules.length, 26);
   assert.equal(c.workspaces.get('relaydesk')?.length, 13);
   assert.ok(c.workspaces.get('taskforge')!.every((step) => Number(step.moduleId.slice(1)) <= 13));
   assert.ok(c.workspaces.get('relaydesk')!.every((step) => Number(step.moduleId.slice(1)) >= 14));
