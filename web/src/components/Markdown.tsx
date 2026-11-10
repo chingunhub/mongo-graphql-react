@@ -43,9 +43,10 @@ function Compare({ source }: { source: string }) {
   );
 }
 
-function renderFence(lang: string, meta: string | undefined, text: string): ReactNode {
+function renderFence(lang: string, meta: string | undefined, text: string, authored: boolean): ReactNode {
   try {
-    switch (lang) {
+    // Model output, transcripts and learner text must never enter the authored lesson DSL.
+    switch (authored ? lang : '') {
       case 'graphql-try':
         return <GraphQLTry source={text} />;
       case 'checkpoint':
@@ -83,7 +84,7 @@ function textOf(node: ReactNode): string {
   return '';
 }
 
-const components: Components = {
+const components = (authored: boolean): Components => ({
   pre({ node }) {
     const code = node?.children?.[0] as
       | { type: string; tagName?: string; properties?: { className?: string[] }; data?: { meta?: string }; children?: { value?: string }[] }
@@ -91,7 +92,7 @@ const components: Components = {
     if (!code || code.tagName !== 'code') return <pre>{textOf(node as never)}</pre>;
     const lang = (code.properties?.className?.[0] ?? '').replace('language-', '');
     const text = (code.children ?? []).map((c) => c.value ?? '').join('');
-    return <>{renderFence(lang, code.data?.meta, text)}</>;
+    return <>{renderFence(lang, code.data?.meta, text, authored)}</>;
   },
   blockquote({ children }) {
     const arr = Children.toArray(children).filter((c) => !(typeof c === 'string' && !c.trim()));
@@ -137,12 +138,16 @@ const components: Components = {
       </a>
     );
   },
-};
+});
 
-export function Markdown({ text }: { text: string }) {
+const plainComponents = components(false);
+const lessonComponents = components(true);
+
+/** Safe by default. Only checked-in curriculum content may opt into interactive lesson fences. */
+export function Markdown({ text, authored = false }: { text: string; authored?: boolean }) {
   return (
     <div className="prose">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={authored ? lessonComponents : plainComponents}>
         {text}
       </ReactMarkdown>
     </div>

@@ -38,6 +38,8 @@ export interface SavedThread {
   display: DisplayMessage[];
   lastNote: string;
   lastItem: string;
+  /** Item context actually supplied to the text model; absent in older saved threads. */
+  contextItem?: string;
   /** What the provider's Conversation.save() returned. */
   state: unknown;
 }

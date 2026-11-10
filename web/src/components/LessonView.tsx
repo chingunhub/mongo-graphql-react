@@ -34,7 +34,7 @@ export function LessonView({ itemKey }: { itemKey: string }) {
             {t('lesson.meta', { minutes: lesson.minutes ?? 10 })}
             {lesson.done ? t('lesson.completed') : ''}
           </div>
-          <Markdown text={lesson.body} />
+          <Markdown authored text={lesson.body} />
           <div className="lesson-footer">
             {prev ? (
               <a className="btn" href={`/learn/${prev.key}`} onClick={onLinkClick}>

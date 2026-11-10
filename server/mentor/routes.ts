@@ -50,6 +50,8 @@ interface Thread {
   lastNote: string;
   /** The item the last message was about. In a project thread it moves along the steps. */
   lastItem: string;
+  /** Separate from display activity: voice turns do not update the text model context. */
+  contextItem: string;
   busy: boolean;
 }
 interface KeyState {
@@ -77,6 +79,7 @@ const emptyThread = (provider: ProviderId, scope: string): Thread => ({
   display: [],
   lastNote: '',
   lastItem: '',
+  contextItem: '',
   busy: false,
 });
 
@@ -87,7 +90,7 @@ function findThread(provider: ProviderId, scope: string): Thread | undefined {
   if (!t) {
     const s = loadThread(provider, scope);
     if (!s) return undefined;
-    t = { ...emptyThread(provider, scope), model: s.model, saved: s.state, display: s.display, lastNote: s.lastNote, lastItem: s.lastItem };
+    t = { ...emptyThread(provider, scope), model: s.model, saved: s.state, display: s.display, lastNote: s.lastNote, lastItem: s.lastItem, contextItem: s.contextItem ?? '' };
     threads.set(id, t);
   }
   return t;
@@ -102,6 +105,7 @@ function persist(t: Thread) {
       display: t.display,
       lastNote: t.lastNote,
       lastItem: t.lastItem,
+      contextItem: t.contextItem,
       state: t.conv ? t.conv.save() : t.saved,
     });
   } catch (e) {
@@ -341,7 +345,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
         t = emptyThread('openai', scope);
         threads.set(threadId('openai', scope), t);
       }
-      // V0 keeps the call in the thread on screen only. Feeding it to the text chat's history is V2.
+      // Voice updates display history, not the text conversation context cursor.
       t.display.push(...turns);
       t.lastItem = item.key;
       persist(t);
@@ -408,7 +412,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
     const conv = thread.conv;
     // In a project thread the learner moves along the steps. The new step's context is appended,
     // so everything before it stays cached.
-    const moved = !fresh && !!thread.lastItem && thread.lastItem !== itemKey;
+    const moved = !fresh && thread.contextItem !== itemKey;
     const note = progressNote(item);
     // What was said in voice calls since the model last heard from this thread, so typing picks up
     // where talking left off. The newest part is kept when it's long.
@@ -436,6 +440,7 @@ export function mountMentor(app: Express, deps: MentorDeps) {
     });
     thread.lastNote = note;
     thread.lastItem = itemKey;
+    thread.contextItem = itemKey;
     thread.display.push({ role: 'user', text: message, ...(moved ? { moved: item.title } : {}) });
     const reply: DisplayMessage = { role: 'assistant', text: '', steps: [], effort, model, cost: 0 };
     thread.display.push(reply);

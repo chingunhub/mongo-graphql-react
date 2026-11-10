@@ -1,4 +1,4 @@
-import express, { type Request, type Response } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -10,7 +10,9 @@ import {
   type TaskItem,
   type Item,
 } from './content.js';
-import { getProgress, itemProgress, peekItem, saveProgress, flush, solutionAvailable } from './progress.js';
+import { getProgress, itemProgress, peekItem, saveProgress, flush, solutionAvailable, progressRecovery } from './progress.js';
+import { mountReviewWorkbench } from './review-workbench.js';
+import { createSaveOrder } from './save-order.js';
 import { exportProgress } from './progress-export.js';
 import { applyReview, restReview, reviewSession, type ReviewOutcome } from './review.js';
 import { runJob, cleanupSandboxDbs, stopPrivateMongo, type Files } from './runner.js';
@@ -52,6 +54,7 @@ function curriculum() {
 }
 
 const app = express();
+const orderedSave = createSaveOrder();
 app.use(express.json({ limit: '5mb' }));
 
 // ---------- helpers ----------
@@ -155,6 +158,15 @@ function saveFiles(task: TaskItem, incoming: Files) {
   saveProgress();
 }
 
+/** Modern editors save independently; runs grade a snapshot without writing older code back. */
+function executionFiles(task: TaskItem, body: { files?: Files; persist?: boolean }): Files {
+  if (body.persist !== false) { saveFiles(task, body.files ?? {}); return taskFiles(task); }
+  const files = taskFiles(task);
+  const ro = new Set(readonlyPaths(task));
+  for (const p of Object.keys(files)) if (!ro.has(p) && typeof body.files?.[p] === 'string') files[p] = body.files[p];
+  return files;
+}
+
 function itemSummary(item: Item) {
   if (item.kind === 'lesson') {
     return {
@@ -201,6 +213,7 @@ app.get('/api/curriculum', (_req, res) => {
     })),
     lastVisited: p.lastVisited,
     settings: p.settings,
+    progressRecovery: progressRecovery(),
   });
 });
 
@@ -246,16 +259,18 @@ app.post('/api/items/:mod/:item/complete', (req, res) => {
 app.post('/api/items/:mod/:item/save', (req, res) => {
   const task = asTask(req, res);
   if (!task) return;
-  saveFiles(task, req.body.files ?? {});
-  emitActivity({ type: 'save', item: task, files: req.body.files ?? {} });
+  orderedSave(task.key, req.body.version, () => {
+    saveFiles(task, req.body.files ?? {});
+    flush();
+    emitActivity({ type: 'save', item: task, files: req.body.files ?? {} });
+  });
   res.json({ ok: true });
 });
 
 app.post('/api/items/:mod/:item/run', async (req, res) => {
   const task = asTask(req, res);
   if (!task) return;
-  saveFiles(task, req.body.files ?? {});
-  const files = taskFiles(task);
+  const files = executionFiles(task, req.body);
   const entry = Object.keys(files).find(isTaskLocal);
   const out = await runJob({
     mode: 'run',
@@ -271,10 +286,10 @@ app.post('/api/items/:mod/:item/run', async (req, res) => {
 app.post('/api/items/:mod/:item/submit', async (req, res) => {
   const task = asTask(req, res);
   if (!task) return;
-  saveFiles(task, req.body.files ?? {});
+  const files = executionFiles(task, req.body);
   const out = await runJob({
     mode: 'test',
-    files: taskFiles(task),
+    files,
     tests: task.tests,
     env: task.env,
     db: task.db,
@@ -331,6 +346,7 @@ app.post('/api/items/:mod/:item/reset', (req, res) => {
   const path = String(req.body.path ?? '');
   const base = task.base ? baseFiles(task) : taskStart(curriculum(), task);
   if (!(path in base)) return void res.status(400).json({ error: 'Unknown file' });
+  if (req.body.persist === false) return void res.json({ path, content: base[path] });
   const ip = itemProgress(task.key);
   if (task.workspace && !isTaskLocal(path)) {
     const ws = getProgress().workspaces[task.workspace];
@@ -346,8 +362,8 @@ app.post('/api/items/:mod/:item/preview', async (req, res) => {
   const task = asTask(req, res);
   if (!task) return;
   if (!task.preview) return void res.status(400).json({ error: 'This task has no preview' });
-  saveFiles(task, req.body.files ?? {});
-  const out = await buildBrowserBundle(task.key, taskFiles(task), task.preview);
+  const files = executionFiles(task, req.body);
+  const out = await buildBrowserBundle(task.key, files, task.preview);
   res.json({ ...out, url: `/preview/${task.key}/?t=${Date.now()}` });
 });
 
@@ -359,6 +375,8 @@ app.get('/preview/:mod/:item/bundle.:ext', (req, res) => {
   if (req.params.ext === 'css') return void res.type('css').send(b?.css ?? '');
   res.type('js').send(b?.js ?? 'document.body.textContent = "Press Run to build the preview."');
 });
+
+mountReviewWorkbench(app, { curriculum, readonlyPaths });
 
 app.get('/api/review', (_req, res) => {
   res.json(reviewSession(curriculum(), getProgress()));
@@ -554,6 +572,10 @@ app.post('/api/shutdown', (_req, res) => {
 
 mountMentor(app, { curriculum, taskFiles, readonlyPaths });
 
+app.use('/api', (error: Error, _req: Request, res: Response, _next: NextFunction) => {
+  res.status(500).json({ error: error.message });
+});
+
 // ---------- web UI ----------
 
 async function mountWeb() {
@@ -586,6 +608,7 @@ async function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+getProgress(); // Validate or recover learner data before accepting requests.
 await cleanupSandboxDbs();
 await mountWeb();
 app.listen(PORT, '127.0.0.1', () => {

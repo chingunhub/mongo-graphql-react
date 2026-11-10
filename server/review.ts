@@ -23,7 +23,7 @@ const addDays = (from: Date | string, days: number) => new Date(new Date(from).g
 const localDay = (date: Date) => date.toLocaleDateString('en-CA');
 
 /** Everything finished so far, each with the date it next comes due. Retired cards are left out. */
-function pool(cur: Curriculum, p: Progress): ReviewCard[] {
+export function reviewPool(cur: Curriculum, p: Progress): ReviewCard[] {
   const cards: ReviewCard[] = [];
   const due = (id: string, learnedAt: string) => p.review.entries[id]?.due ?? addDays(learnedAt, INTERVALS[0]);
   const retired = (id: string) => (p.review.entries[id]?.stage ?? 0) >= INTERVALS.length;
@@ -74,7 +74,7 @@ export function reviewSession(cur: Curriculum, p: Progress, now = new Date()) {
   const gapDays = daysSinceActive(p, now);
   if (p.review.restedOn === localDay(now)) return { cards: [], gapDays };
   const size = gapDays >= RETURNING_GAP ? RETURNING_SIZE : SESSION_SIZE;
-  const due = pool(cur, p)
+  const due = reviewPool(cur, p)
     .filter((card) => new Date(card.due) <= now)
     .sort((a, b) => a.due.localeCompare(b.due));
   const lessons = new Set<string>();
@@ -89,9 +89,11 @@ export function reviewSession(cur: Curriculum, p: Progress, now = new Date()) {
 }
 
 /** Moves one card along. Returns false for a card that isn't in the pool. */
-export function applyReview(cur: Curriculum, p: Progress, id: string, outcome: ReviewOutcome, now = new Date()) {
+export function applyReview(cur: Curriculum, p: Progress, id: string, outcome: ReviewOutcome, now = new Date(), gradedDrill = false) {
   if (!['right', 'wrong', 'skip'].includes(outcome)) return false;
-  if (!pool(cur, p).some((card) => card.id === id)) return false;
+  const card = reviewPool(cur, p).find((card) => card.id === id);
+  if (!card || new Date(card.due) > now) return false;
+  if (card.kind === 'drill' && outcome !== 'skip' && !gradedDrill) return false;
   const stage = p.review.entries[id]?.stage ?? 0;
   const at = now.toISOString();
   if (outcome === 'skip') p.review.entries[id] = { stage, due: addDays(now, 1), at };

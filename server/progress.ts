@@ -1,6 +1,5 @@
 import type { Language } from '../shared/languages.js';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createProgressStore } from './progress-store.js';
 import { DATA_DIR } from './paths.js';
 import type { Files } from './runner.js';
 
@@ -22,6 +21,12 @@ export interface ReviewEntry {
   at: string;
 }
 
+export interface ReviewAttempt extends ItemProgress {
+  cycle: string;
+  files: Files;
+  reviewOutcome?: 'right' | 'wrong';
+}
+
 export interface Progress {
   version: 1;
   items: Record<string, ItemProgress>;
@@ -34,49 +39,15 @@ export interface Progress {
     mentor?: { provider: string; model?: string };
   };
   /** Spaced review, kept apart from pass or fail. */
-  review: { entries: Record<string, ReviewEntry>; restedOn?: string };
+  review: { entries: Record<string, ReviewEntry>; restedOn?: string; attempts?: Record<string, ReviewAttempt> };
   lastVisited?: string;
 }
 
-const FILE = join(DATA_DIR, 'progress.json');
-
-function empty(): Progress {
-  return {
-    version: 1,
-    items: {},
-    lessons: {},
-    workspaces: {},
-    settings: { unlockAll: false },
-    review: { entries: {} },
-  };
-}
-
-let cache: Progress | null = null;
-
-export function getProgress(): Progress {
-  if (cache) return cache;
-  if (!existsSync(FILE)) return (cache = empty());
-  try {
-    cache = { ...empty(), ...JSON.parse(readFileSync(FILE, 'utf8')) } as Progress;
-  } catch {
-    cache = empty();
-  }
-  return cache;
-}
-
-let timer: NodeJS.Timeout | null = null;
-export function saveProgress() {
-  if (timer) clearTimeout(timer);
-  timer = setTimeout(flush, 150);
-}
-
-export function flush() {
-  if (!cache) return;
-  mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = FILE + '.tmp';
-  writeFileSync(tmp, JSON.stringify(cache, null, 1));
-  renameSync(tmp, FILE);
-}
+const store = createProgressStore(DATA_DIR);
+export const getProgress = store.get;
+export const saveProgress = store.save;
+export const flush = store.flush;
+export const progressRecovery = () => store.recovery;
 
 export function itemProgress(key: string): ItemProgress {
   const p = getProgress();

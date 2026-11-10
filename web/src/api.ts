@@ -1,5 +1,6 @@
 import type { Language } from '../../shared/languages';
 import type { TaskforgeStage } from '../../shared/taskforge';
+import type { SaveVersion } from './draft';
 
 export type Files = Record<string, string>;
 
@@ -31,6 +32,7 @@ export interface CurriculumData {
   modules: ModuleSummary[];
   lastVisited?: string;
   settings: { unlockAll: boolean; language?: Language };
+  progressRecovery?: string | null;
 }
 
 export interface LessonData extends ItemSummary {
@@ -38,6 +40,8 @@ export interface LessonData extends ItemSummary {
 }
 
 export interface TaskData extends ItemSummary {
+  reviewCycle?: string;
+  reviewOutcome?: 'right' | 'wrong';
   env: 'node' | 'dom';
   instructions: string;
   focus: string[];
@@ -92,6 +96,7 @@ export interface RunOutput {
   timedOut?: boolean;
   ms: number;
   firstPass?: boolean;
+  reviewOutcome?: 'right' | 'wrong';
   attempts?: number;
   solutionAvailable?: boolean;
 }
@@ -107,7 +112,9 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   return json as T;
 }
 
-const itemUrl = (key: string) => `/api/items/${key}`;
+export const itemUrl = (key: string, review: boolean | string = false) => `/api/${review ? 'review/items' : 'items'}/${key}`;
+
+export const saveBody = (files: Files, version: SaveVersion | undefined, review: boolean | string = false) => ({ files, version, cycle: review });
 
 export const api = {
   relaydeskSource: (kind: 'mine' | 'reference') =>
@@ -135,20 +142,20 @@ export const api = {
     ),
 
   curriculum: () => call<CurriculumData>('GET', '/api/curriculum'),
-  item: <T>(key: string) => call<T>('GET', itemUrl(key)),
+  item: <T>(key: string, review: boolean | string = false) => call<T>('GET', itemUrl(key, review)),
   completeLesson: (key: string) => call('POST', `${itemUrl(key)}/complete`),
-  save: (key: string, files: Files) => call('POST', `${itemUrl(key)}/save`, { files }),
-  run: (key: string, files: Files) => call<RunOutput>('POST', `${itemUrl(key)}/run`, { files }),
-  submit: (key: string, files: Files) => call<RunOutput>('POST', `${itemUrl(key)}/submit`, { files }),
-  hint: (key: string) => call<{ hints: string[] }>('POST', `${itemUrl(key)}/hint`),
-  solution: (key: string) => call<{ files: Files }>('POST', `${itemUrl(key)}/solution`),
-  reset: (key: string, path: string) =>
-    call<{ path: string; content: string }>('POST', `${itemUrl(key)}/reset`, {
-      path,
+  save: (key: string, files: Files, version?: SaveVersion, review: boolean | string = false) => call('POST', `${itemUrl(key, review)}/save`, saveBody(files, version, review)),
+  run: (key: string, files: Files, review: boolean | string = false) => call<RunOutput>('POST', `${itemUrl(key, review)}/run`, { files, persist: false, cycle: review }),
+  submit: (key: string, files: Files, review: boolean | string = false) => call<RunOutput>('POST', `${itemUrl(key, review)}/submit`, { files, persist: false, cycle: review }),
+  hint: (key: string, review: boolean | string = false) => call<{ hints: string[] }>('POST', `${itemUrl(key, review)}/hint`, { cycle: review }),
+  solution: (key: string, review: boolean | string = false) => call<{ files: Files }>('POST', `${itemUrl(key, review)}/solution`, { cycle: review }),
+  reset: (key: string, path: string, review: boolean | string = false) =>
+    call<{ path: string; content: string }>('POST', `${itemUrl(key, review)}/reset`, {
+      path, persist: false, cycle: review,
     }),
-  preview: (key: string, files: Files) =>
-    call<{ ok: boolean; url: string; compileErrors?: CompileError[] }>('POST', `${itemUrl(key)}/preview`, {
-      files,
+  preview: (key: string, files: Files, review: boolean | string = false) =>
+    call<{ ok: boolean; url: string; compileErrors?: CompileError[] }>('POST', `${itemUrl(key, review)}/preview`, {
+      files, persist: false, cycle: review,
     }),
   settings: (s: Partial<CurriculumData['settings']>) => call('PUT', '/api/settings', s),
   review: () => call<ReviewSession>('GET', '/api/review'),

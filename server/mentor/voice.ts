@@ -122,6 +122,8 @@ interface Call {
   /** For the debug timeline. */
   started: number;
   delegations: Map<string, number>;
+  contextEpoch: number;
+  responseContexts: Map<string, { item: Item; epoch: number }>;
   /** Reactions to edits: the item context a glance starts from, and its state. */
   lookContext: string;
   looking: boolean;
@@ -254,14 +256,17 @@ function showCode(c: Call, raw: string): { output: string; label: string } {
   return { output: 'Shown in the panel. Now tell the learner briefly where it goes; do not read it aloud.', label: path ? `Showed code for ${path}` : 'Showed code' };
 }
 
-async function runCall(host: VoiceHost, c: Call, item: { call_id: string; name: string; arguments: string }) {
+async function runCall(host: VoiceHost, c: Call, item: { call_id: string; name: string; arguments: string }, context: { item: Item; epoch: number }) {
   const t0 = Date.now();
   dbg(c, `tool ${item.name} called`);
+  const stale = () => ({ call_id: item.call_id, output: 'The learner changed items. This tool request belongs to the previous item; use the new item context before calling tools again.' });
+  if (context.epoch !== c.contextEpoch) return stale();
   try {
     const outcome =
       item.name === 'show_code'
         ? showCode(c, item.arguments)
-        : await runTool(host.deps, c.item, item.name, item.arguments ?? '{}', c.ctl.signal);
+        : await runTool(host.deps, context.item, item.name, item.arguments ?? '{}', c.ctl.signal);
+    if (context.epoch !== c.contextEpoch) return stale();
     if (outcome.label) c.tools.push(outcome.label);
     dbg(c, `tool ${item.name} done in ${Date.now() - t0} ms`);
     return { call_id: item.call_id, output: outcome.output };
@@ -277,11 +282,14 @@ async function answerCalls(c: Call, delegation: string) {
   if (!runs?.length || c.ended) return;
   const results = await Promise.all(runs);
   if (c.ended) return;
+  c.backendBusy = false;
+  for (const text of c.backendQueue.splice(0)) tellBackend(c, text);
   updateTools(c);
   for (const r of results) {
     c.sideband.send({ type: 'response.item.create', item: { type: 'function_call_output', call_id: r.call_id, output: r.output } });
   }
   c.sideband.send({ type: 'response.create' });
+  c.backendBusy = true; c.busySince = Date.now();
 }
 
 function trace(c: Call, ev: { type: string; [k: string]: unknown }) {
@@ -316,13 +324,14 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
       const inner = ev.event as { type?: string; item?: Record<string, unknown>; response?: OpenAIResponse };
       const delegation = String(ev.delegation_id ?? 'session');
       if (inner?.type === 'response.created') {
+        c.responseContexts.set(delegation, { item: c.item, epoch: c.contextEpoch });
         c.backendBusy = true;
         c.busySince = Date.now();
       }
       if (inner?.type === 'response.output_item.done' && inner.item?.type === 'function_call') {
         const call = inner.item as { call_id: string; name: string; arguments: string };
         const runs = c.pending.get(delegation) ?? [];
-        runs.push(runCall(host, c, call));
+        runs.push(runCall(host, c, call, c.responseContexts.get(delegation) ?? { item: c.item, epoch: c.contextEpoch }));
         c.pending.set(delegation, runs);
       } else if (
         inner?.type === 'response.completed' ||
@@ -354,7 +363,10 @@ function onEvent(host: VoiceHost, c: Call, ev: { type: string; [k: string]: unkn
     }
     case 'session.delegation.created': {
       const d = ev.delegation as { id?: string } | undefined;
-      if (d?.id) c.delegations.set(d.id, Date.now());
+      if (d?.id) {
+        c.delegations.set(d.id, Date.now());
+        c.responseContexts.set(d.id, { item: c.item, epoch: c.contextEpoch });
+      }
       dbg(c, 'delegation started');
       return;
     }
@@ -392,12 +404,12 @@ function checkCap(c: Call) {
 }
 
 /** The reference tool appears once the learner passes or submits 3 times, as in the text chat. */
-function updateTools(c: Call) {
+function updateTools(c: Call, contextChanged = false) {
   const now = delegationTools(c.item);
   const names = now.map((t) => t.name);
-  if (names.join() === c.sentTools.join()) return;
+  if (!contextChanged && names.join() === c.sentTools.join()) return;
   c.sentTools = names;
-  c.sideband.send({ type: 'session.update', session: { delegation: { type: 'responses', responses: { tools: now } } } });
+  c.sideband.send({ type: 'session.update', session: { delegation: { type: 'responses', responses: { tools: now, ...(contextChanged ? { instructions: `${MENTOR_INSTRUCTIONS}${VOICE_BACKEND_NOTE}\n\n${c.lookContext}` } : {}) } } } });
 }
 
 /** The longest typed message a call takes. */
@@ -687,6 +699,8 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
   if (a.type === 'open') {
     if (a.item.key === c.item.key) return;
     c.item = a.item;
+    c.contextEpoch++;
+    c.saveSeq++; // Invalidate a glance still running against the previous exercise.
     c.parts.push({ item: a.item, from: c.turns.length });
     c.lookContext = `${itemContext(host.deps, a.item)}\n\n${progressNote(a.item)}`;
     c.files = a.item.kind === 'lesson' ? {} : { ...host.deps.taskFiles(a.item) };
@@ -705,7 +719,9 @@ function follow(host: VoiceHost, c: Call, a: Activity) {
         ? `the lesson "${a.item.title}" (key ${a.item.key}). Read it with read_lesson when it matters.`
         : `the exercise "${a.item.title}" (key ${a.item.key}). Its instructions start: ${clip(a.item.instructions.replace(/\s+/g, ' '), 600)} Read its files and run its tests with the tools.`;
     note(c, 'open', `The learner moved on to ${what} Earlier notes were about the previous item.`);
-    updateTools(c);
+    // Refresh future delegations AND the existing backend conversation, even when tools are unchanged.
+    updateTools(c, true);
+    tellBackend(c, 'The learner moved to another item. Replace the earlier item context with this one:\n\n' + c.lookContext);
     return;
   }
   if (a.item.key !== c.item.key) return;
@@ -993,6 +1009,8 @@ export function mountVoice(app: Express, host: VoiceHost) {
       saveSince: 0,
       started: Date.now(),
       delegations: new Map(),
+      contextEpoch: 0,
+      responseContexts: new Map(),
       lookContext: context,
       looking: false,
       lastReaction: 0,

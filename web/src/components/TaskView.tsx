@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { EditorView } from '@codemirror/view';
-import { api, type CompileError, type Files, type RunOutput, type TaskData } from '../api';
+import { api, itemUrl, saveBody, type CompileError, type Files, type RunOutput, type TaskData } from '../api';
 import { useCurriculum } from '../App';
 import { afterThis } from './moduleProgress';
 import { Markdown } from './Markdown';
 import { CodeBlock } from './CodeBlock';
 import { useIsDark } from './useIsDark';
-import { navigate, onLinkClick } from '../router';
+import { navigate, onLinkClick, beforeNavigate } from '../router';
+import { createDraft } from '../draft';
 import { Celebrate } from './Celebrate';
 import { Milestone } from './Milestone';
 import { milestones, type Milestone as MilestoneInfo } from '../../../shared/stages';
@@ -194,7 +195,7 @@ function TestsPanel({ out, onJump }: { out: RunOutput | null; onJump: (e: Compil
   );
 }
 
-export function TaskView({ itemKey }: { itemKey: string }) {
+export function TaskView({ itemKey, review = false }: { itemKey: string; review?: boolean }) {
   const [task, setTask] = useState<TaskData | null>(null);
   const [files, setFiles] = useState<Files>({});
   const [openTabs, setOpenTabs] = useState<string[]>([]);
@@ -212,6 +213,9 @@ export function TaskView({ itemKey }: { itemKey: string }) {
   const [milestone, setMilestone] = useState<MilestoneInfo | null>(null);
   const closeMilestone = useCallback(() => setMilestone(null), []);
   const [saved, setSaved] = useState(true);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const draftRef = useRef<ReturnType<typeof createDraft> | null>(null);
   const [formatNote, setFormatNote] = useState<{ ok: boolean; text: string } | null>(null);
   const dark = useIsDark();
   const cmRef = useRef<ReactCodeMirrorRef>(null);
@@ -225,43 +229,45 @@ export function TaskView({ itemKey }: { itemKey: string }) {
   const { data: curriculum, refresh, neighbors, find } = useCurriculum();
   const filesRef = useRef(files);
   filesRef.current = files;
-  const savedRef = useRef(saved);
-  savedRef.current = saved;
   const activeRef = useRef(active);
   activeRef.current = active;
   const readonlyRef = useRef<Set<string>>(new Set());
 
-  // Closing the window inside the autosave delay must not lose the last keystrokes.
-  useEffect(
-    () =>
-      onUnloadFlush(() => {
-        if (savedRef.current) return;
-        const body = new Blob([JSON.stringify({ files: filesRef.current })], { type: 'application/json' });
-        navigator.sendBeacon(`/api/items/${itemKey}/save`, body);
-      }),
-    [itemKey],
-  );
-
   useEffect(() => {
-    api.item<TaskData>(itemKey).then((t) => {
-      setTask(t);
-      setFiles(t.files);
-      setHints(t.hints);
+    let cancelled = false;
+    let dispose = () => {};
+    api.item<TaskData>(itemKey, review).then((t) => {
+      if (cancelled) return;
+      let storage: Storage | undefined;
+      try { storage = localStorage; } catch { /* Browser storage may be disabled. */ }
+      const draft = createDraft({
+        initial: t.files, storage, key: 'forge-draft:' + itemUrl(itemKey, review) + (t.reviewCycle ?? ''),
+        save: (files, version) => api.save(itemKey, files, version, review ? t.reviewCycle : false),
+      });
+      draftRef.current = draft;
+      const unsubscribe = draft.subscribe(state => {
+        filesRef.current = state.files;
+        setFiles(state.files); setSaved(state.saved); setSaveError(state.error);
+      });
+      const leave = beforeNavigate(() => draft.flush());
+      const unload = onUnloadFlush(() => draft.beacon((files, version) => {
+        navigator.sendBeacon(itemUrl(itemKey, review) + '/save', new Blob([JSON.stringify(saveBody(files, version, review ? t.reviewCycle : false))], { type: 'application/json' }));
+      }));
+      dispose = () => {
+        leave(); unload(); unsubscribe();
+        void draft.flush().catch(() => {}); // Covers a non-router unmount; the local draft remains on failure.
+        draft.dispose();
+      };
+      setTask(t); setHints(t.hints);
       const focus = t.focus.filter((f) => f in t.files);
       const first = focus[0] ?? Object.keys(t.files).find((p) => !t.readonly.includes(p)) ?? Object.keys(t.files)[0];
-      setOpenTabs(focus.length ? focus : [first]);
-      setActive(first);
-    });
-  }, [itemKey]);
+      setOpenTabs(focus.length ? focus : [first]); setActive(first);
+      draft.start();
+    }, error => { if (!cancelled) setActionError(error.message); });
+    return () => { cancelled = true; dispose(); };
+  }, [itemKey, review]);
 
-  // autosave
-  useEffect(() => {
-    if (!task || saved) return;
-    const t = setTimeout(() => {
-      api.save(itemKey, filesRef.current).then(() => setSaved(true));
-    }, 900);
-    return () => clearTimeout(t);
-  }, [files, saved, task, itemKey]);
+  const changeFiles = (next: Files) => draftRef.current?.edit(next);
 
   const readonly = useMemo(() => new Set(task?.readonly ?? []), [task]);
   readonlyRef.current = readonly;
@@ -293,8 +299,8 @@ export function TaskView({ itemKey }: { itemKey: string }) {
     const files = view && path && !readonlyRef.current.has(path)
       ? { ...filesRef.current, [path]: view.state.doc.toString() }
       : filesRef.current;
-    await api.save(itemKey, files);
-    setSaved(true);
+    draftRef.current?.edit(files);
+    await draftRef.current?.flush().catch(() => {});
   }, [formatActive, itemKey]);
   const focus = useMemo(() => new Set(task?.focus ?? []), [task]);
 
@@ -331,52 +337,53 @@ export function TaskView({ itemKey }: { itemKey: string }) {
 
   const run = useCallback(async () => {
     if (!task || busy) return;
-    setBusy('run');
+    setBusy('run'); setActionError(null);
     try {
+      await draftRef.current?.flush();
       if (task.preview) {
         setBottomTab('preview');
-        const r = await api.preview(itemKey, filesRef.current);
+        const r = await api.preview(itemKey, filesRef.current, review ? task.reviewCycle : false);
         if (r.ok) {
           setPreviewUrl(r.url);
           setPreviewErrors(null);
         } else setPreviewErrors(r.compileErrors ?? []);
       } else {
         setBottomTab('console');
-        setRunOut(await api.run(itemKey, filesRef.current));
+        setRunOut(await api.run(itemKey, filesRef.current, review ? task.reviewCycle : false));
       }
-      setSaved(true);
-    } finally {
+    } catch (e) { setActionError((e as Error).message); } finally {
       setBusy(null);
     }
-  }, [task, busy, itemKey]);
+  }, [task, busy, itemKey, review]);
 
   const submit = useCallback(async () => {
     if (!task || busy) return;
-    setBusy('submit');
+    setBusy('submit'); setActionError(null);
     setBottomTab('tests');
     try {
-      const out = await api.submit(itemKey, filesRef.current);
+      await draftRef.current?.flush();
+      const out = await api.submit(itemKey, filesRef.current, review ? task.reviewCycle : false);
       setTestOut(out);
-      setSaved(true);
       setTask((t) =>
         t
           ? {
               ...t,
+              reviewOutcome: out.reviewOutcome,
               attempts: out.attempts ?? t.attempts,
               solutionAvailable: !!out.solutionAvailable,
               status: out.ok ? 'passed' : t.status,
             }
           : t,
       );
-      if (out.firstPass) {
+      if (out.firstPass && !review) {
         setCelebrate(true);
         setMilestone(milestones[itemKey] ?? null);
       }
       if (out.ok) void refresh();
-    } finally {
+    } catch (e) { setActionError((e as Error).message); } finally {
       setBusy(null);
     }
-  }, [task, busy, itemKey, refresh]);
+  }, [task, busy, itemKey, review, refresh]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -393,7 +400,7 @@ export function TaskView({ itemKey }: { itemKey: string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [run, submit, saveNow]);
 
-  if (!task) return null;
+  if (!task) return actionError ? <div className="callout caution" role="alert">{actionError}</div> : null;
   const ctx = find(itemKey);
   const { next } = neighbors(itemKey);
 
@@ -452,7 +459,13 @@ export function TaskView({ itemKey }: { itemKey: string }) {
             </span>
           </div>
           <h1>{task.title}</h1>
-          {ctx && <p className="task-after">{afterThis(curriculum?.modules ?? [], ctx.mod, task.key)}</p>}
+          {review && <div className="callout note">
+            <b>Review workspace</b>
+            <p>This starts from the starter files. Your original solution and course progress stay separate. Only a graded submission records recall; opening this page earns no credit.</p>
+            <p>{task.reviewOutcome === 'right' ? 'Recall passed. Your next review is scheduled.' : task.reviewOutcome === 'wrong' ? 'This recall needs practice. Keep working here; a fresh review will return in three days.' : 'Try from memory first. Hints and the reference are available if you need to relearn.'}</p>
+            <a href="/" onClick={onLinkClick}>Back to the course</a>
+          </div>}
+          {!review && ctx && <p className="task-after">{afterThis(curriculum?.modules ?? [], ctx.mod, task.key)}</p>}
         </div>
         <div className="tabs">
           <button className={'tab' + (leftTab === 'brief' ? ' active' : '')} onClick={() => setLeftTab('brief')}>
@@ -471,8 +484,8 @@ export function TaskView({ itemKey }: { itemKey: string }) {
         <div className="task-scroll">
           {leftTab === 'brief' && (
             <>
-              <Markdown text={task.instructions} />
-              {task.status === 'passed' && next && (
+              <Markdown authored text={task.instructions} />
+              {!review && task.status === 'passed' && next && (
                 <div className="callout tip" style={{ marginTop: 20 }}>
                   <div className="callout-title">Done</div>
                   <p>
@@ -511,11 +524,11 @@ export function TaskView({ itemKey }: { itemKey: string }) {
               {hints.map((h, i) => (
                 <div className="hint-card" key={i}>
                   <div className="n">Hint {i + 1}</div>
-                  <Markdown text={h} />
+                  <Markdown authored text={h} />
                 </div>
               ))}
               {hints.length < task.hintCount ? (
-                <button className="btn" onClick={async () => setHints((await api.hint(itemKey)).hints)}>
+                <button className="btn" onClick={async () => setHints((await api.hint(itemKey, review ? task.reviewCycle : false)).hints)}>
                   Show hint {hints.length + 1} of {task.hintCount}
                 </button>
               ) : (
@@ -537,7 +550,7 @@ export function TaskView({ itemKey }: { itemKey: string }) {
                       ? 'Compare your approach with the reference. Different is fine — tests passing means it works.'
                       : 'Looking now is OK — but try to rebuild it yourself afterwards without peeking.'}
                   </p>
-                  <button className="btn" onClick={async () => setSolution((await api.solution(itemKey)).files)}>
+                  <button className="btn" onClick={async () => setSolution((await api.solution(itemKey, review ? task.reviewCycle : false)).files)}>
                     Reveal solution
                   </button>
                 </>
@@ -579,7 +592,8 @@ export function TaskView({ itemKey }: { itemKey: string }) {
               {formatNote.text}
             </span>
           )}
-          <span className="kbd-hint">{saved ? 'saved' : 'saving…'}</span>
+          <span className="kbd-hint" role="status">{saveError ? 'not saved' : saved ? 'saved' : 'saving…'}</span>
+          {saveError && <button className="btn small" onClick={() => void draftRef.current?.flush().catch(() => {})}>Retry save</button>}
           {!isRO && canFormat(active) && (
             <button className="btn small" title="Format with Prettier (Shift+Alt+F, or Ctrl+S)" onClick={() => void formatActive()}>
               ✨ Format
@@ -591,19 +605,20 @@ export function TaskView({ itemKey }: { itemKey: string }) {
               title="Reset this file to how the step started"
               onClick={async () => {
                 if (!confirm(`Reset ${active}? Your changes to this file will be lost.`)) return;
-                const r = await api.reset(itemKey, active);
-                setFiles((f) => ({ ...f, [r.path]: r.content }));
+                const r = await api.reset(itemKey, active, review ? task.reviewCycle : false);
+                changeFiles({ ...filesRef.current, [r.path]: r.content });
               }}
             >
               ↺ Reset file
             </button>
           )}
-          {task.status === 'passed' && next && (
+          {!review && task.status === 'passed' && next && (
             <button className="btn small ok" onClick={() => navigate(`/learn/${next.key}`)}>
               Next →
             </button>
           )}
         </div>
+        {(saveError || actionError) && <div className="callout caution" role="alert">{saveError || actionError}</div>}
         <div
           className="editor-area"
           ref={areaRef}
@@ -645,10 +660,7 @@ export function TaskView({ itemKey }: { itemKey: string }) {
                   extensions={extensions}
                   editable={!isRO}
                   readOnly={isRO}
-                  onChange={(v) => {
-                    setFiles((f) => ({ ...f, [active]: v }));
-                    setSaved(false);
-                  }}
+                  onChange={(v) => changeFiles({ ...filesRef.current, [active]: v })}
                   basicSetup={{ tabSize: 2 }}
                   indentWithTab={false}
                 />

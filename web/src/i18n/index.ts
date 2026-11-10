@@ -82,7 +82,7 @@ const en = {
   'review.rereadEnd': '. It comes back in a few days.',
   'review.drillTitle': 'Could you still do this one from a blank file?',
   'review.drillBody':
-    'Open it, press Reset file on what you wrote, and try it without looking. Your pass stays whatever happens.',
+    'Open a separate workspace with starter files and try from memory. Your saved solution stays intact; submitting tests records the review.',
   'review.openDrill': 'Open the drill',
   'review.done': 'Done',
   'review.next': 'Next',
@@ -319,7 +319,7 @@ const mn: Partial<Record<StringKey, string>> = {
   'review.rereadEnd': '. Хэдэн өдрийн дараа дахин гарч ирнэ.',
   'review.drillTitle': 'Үүнийг одоо ч хоосон файлаас хийж чадах уу?',
   'review.drillBody':
-    'Нээгээд, бичсэн кодоо Reset file-аар цэвэрлээд, юу ч харалгүй дахин оролд. Өмнөх pass чинь юу ч болсон хэвээр үлдэнэ.',
+    'Starter файлтай тусдаа ажлын орчныг нээгээд, санаж байгаагаараа оролд. Хадгалсан шийдэл чинь хэвээр үлдэнэ; тест илгээхэд давтлагын үр дүн бүртгэгдэнэ.',
   'review.openDrill': 'Drill-ийг нээх',
   'review.done': 'Болсон',
   'review.next': 'Дараагийнх',

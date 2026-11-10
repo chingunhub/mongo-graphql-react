@@ -21,7 +21,7 @@ interface Ctx {
   find: (key: string) => { mod: ModuleSummary; item: ItemSummary; index: number } | null;
   neighbors: (key: string) => { prev?: ItemSummary; next?: ItemSummary };
 }
-const CurriculumContext = createContext<Ctx>(null!);
+export const CurriculumContext = createContext<Ctx>(null!);
 export const useCurriculum = () => useContext(CurriculumContext);
 
 export function partColor(part: string) {
@@ -56,7 +56,7 @@ export function App() {
   const [data, setData] = useState<CurriculumData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const path = usePath();
-  const onTask = /^\/learn\/m\d\d\/(?!l\d)/.test(path);
+  const onTask = /^\/(?:learn|review)\/m\d\d\/(?!l\d)/.test(path);
   const [collapsedPref, setCollapsed] = useState<boolean | null>(null);
   // Tasks need the width: collapse the curriculum there unless the user opened it.
   const collapsed = collapsedPref ?? onTask;
@@ -140,7 +140,9 @@ export function App() {
       scope: project ? `project-${project}` : item.key,
     };
   }
-  if (path === '/' || path === '') page = <Home />;
+  const reviewMatch = path.match(/^\/review\/(m\d\d)\/([^/]+)$/);
+  if (reviewMatch) page = <TaskView key={'review:' + reviewMatch[1] + '/' + reviewMatch[2]} itemKey={reviewMatch[1] + '/' + reviewMatch[2]} review />;
+  else if (path === '/' || path === '') page = <Home />;
   else if (path.startsWith('/taskforge')) page = <TaskforgePage />;
   else if (path.startsWith('/relaydesk')) page = <RelaydeskPage />;
   else if (m) {
@@ -262,6 +264,7 @@ export function App() {
               <p>{error}</p>
             </div>
           )}
+          {data?.progressRecovery && <div className="callout caution" role="status">{data.progressRecovery}</div>}
           {page}
         </main>
         {mentorOpen && (

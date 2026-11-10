@@ -94,9 +94,8 @@ export function ReviewWarmup() {
         {card.kind === 'drill' ? (
           <a
             className="btn primary"
-            href={`/learn/${card.key}`}
+            href={`/review/${card.key}`}
             onClick={(e) => {
-              api.answerReview(card.id, 'right').catch(() => {});
               rest();
               onLinkClick(e);
             }}

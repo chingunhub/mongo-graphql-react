@@ -418,14 +418,19 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
   // Load the thread for the open item. Steps of one project share a thread, so moving between them
   // keeps the conversation on screen. A reply still streaming finishes into the thread it started in.
   const want = item && provider ? `${provider.id}|${item.scope}` : '';
+  const screenRef = useRef({ item, provider, want, busy, inCall });
+  screenRef.current = { item, provider, want, busy, inCall };
+  const threadRequest = useRef(0);
   useEffect(() => {
     if (locked || want === loaded) return;
+    const request = ++threadRequest.current;
     setLoaded(want);
     setMessages([]);
     setLastItem(null);
     if (!item || !provider) return;
     json<{ messages: Msg[]; lastItem: string | null }>(threadUrl(item.key, provider.id)).then(
       (r) => {
+        if (request !== threadRequest.current || screenRef.current.want !== want) return;
         setMessages(r.messages);
         setLastItem(r.lastItem);
       },
@@ -564,6 +569,7 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
       { role: 'user', text: message, ...(moved ? { moved: item.title } : {}) },
       { role: 'assistant', text: '', steps: [], effort: chosenEffort, model },
     ]);
+    threadRequest.current++; // An older thread fetch must not replace a new streamed reply.
     const ctl = new AbortController();
     abortRef.current = ctl;
     try {
@@ -645,12 +651,16 @@ export function MentorPanel({ item, onClose }: { item: MentorItem | null; onClos
     hangUp();
     setCall((c) => (c ? { ...c, phase: 'ended', reason: c.reason ?? reason } : c));
     void loadStatus();
-    if (!item || !provider) return;
-    const url = threadUrl(item.key, 'openai');
     setTimeout(() => {
+      const screen = screenRef.current;
+      if (!screen.item || screen.provider?.id !== 'openai' || screen.busy || screen.inCall) return;
+      const request = ++threadRequest.current;
+      const url = threadUrl(screen.item.key, 'openai');
       json<{ messages: Msg[]; lastItem: string | null }>(url).then(
         (r) => {
-          if (provider.id === 'openai') setMessages(r.messages);
+          if (request !== threadRequest.current || screenRef.current.want !== screen.want || screenRef.current.busy || screenRef.current.inCall) return;
+          setMessages(r.messages);
+          setLastItem(r.lastItem);
           setCall((c) => (c && c.phase === 'ended' ? { ...c, turns: [] } : c));
         },
         () => {},
