@@ -78,7 +78,7 @@ It's off until you add your own API key from [OpenAI](https://platform.openai.co
 
 ### Talking to it (OpenAI key only)
 
-With an OpenAI key, **🎙 Talk** in the mentor panel starts a voice call, like having an instructor beside you. It follows what you do while you work: what you save, your test results, the hints you open, the part of a lesson you're reading. Now and then it speaks up on its own, with a short word about an edit or a check-in when the same test keeps failing. The **Nudges** switch turns that off, so it only answers. When code would help, it puts a snippet in the chat panel instead of reading it out. What was said is kept with the chat, so you can carry on by typing.
+With an OpenAI key, **🎙 Talk** in the mentor panel starts a voice call, like having an instructor beside you. It follows what you do while you work: what you save, your test results, the hints you open, the part of a lesson you're reading. Now and then it speaks up on its own, with a short word about an edit or a check-in when the same test keeps failing. The **Nudges** switch turns that off, so it only answers. When code would help, it puts a snippet in the chat panel instead of reading it out. You can also type during a call, to paste an error for example, and it answers out loud. What was said is kept with the chat, so you can carry on by typing.
 
 - **Voice is English only**, even with the Mongolian interface. No voice model handles Mongolian well enough yet.
 - **Use headphones.** Through laptop speakers the mentor hears itself.
