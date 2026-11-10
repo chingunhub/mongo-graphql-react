@@ -1,6 +1,6 @@
 # Persistence, mentor context, and review workspaces
 
-These changes belong to the unmerged codex/reliability-fixes branch, based on 0a73b3b. Develop and preview this branch in its own worktree. Never point its FORGE_DATA at an active learner profile.
+These changes ship in v0.3.2. They were developed on codex/reliability-fixes, based on 0a73b3b, and approved for merge by the learner on 2026-11-10. Future development and QA must use a separate worktree and profile; never point test FORGE_DATA at an active learner profile.
 
 ## Editor saves
 
@@ -38,4 +38,4 @@ Run npm run typecheck, npm run build and npm run test:platform. The new regressi
 
 Browser QA should use a temporary FORGE_DATA plus distinct FORGE_PORT, FORGE_REFERENCE_PORT and FORGE_LAUNCH_PORT. Check delayed autosave acknowledgements, navigation before the debounce, retry after a save outage, edits during Run/Submit, and review isolation. Check both original checkouts' progress hashes and Git status afterward.
 
-Validation on 2026-11-10: typecheck, production build, and all 194 platform tests passed. Browser checks covered delayed and failed saves, navigation, edits during Run/Submit, review isolation, and review unload beacons. With the learner-authorized remembered connection, live text, delegation context changes, voice output transcripts and voice-to-text context were checked on a disposable profile. The first synthetic session expired before speech; a retry with an active silent audio stream remained connected and produced the correct new-step transcript without a provider error. Both calls were ended. Physical microphone capture and audible playback were not tested. Merge only after learner review.
+Validation on 2026-11-10: typecheck, production build, and all 194 platform tests passed. Browser checks covered delayed and failed saves, navigation, edits during Run/Submit, review isolation, and review unload beacons. With the learner-authorized remembered connection, live text, delegation context changes, voice output transcripts and voice-to-text context were checked on a disposable profile. The first synthetic session expired before speech; a retry with an active silent audio stream remained connected and produced the correct new-step transcript without a provider error. Both calls were ended. Physical microphone capture and audible playback were not tested. The learner reviewed the fixes and authorized merging and publishing v0.3.2.

@@ -85,6 +85,16 @@ With an OpenAI key, **🎙 Talk** in the mentor panel starts a voice call, like 
 - **What's sent**: your microphone audio goes straight from the browser to OpenAI during the call. The same item details as the chat go through the app, which still keeps your key to itself.
 - **Cost**: voice is $0.05 a minute, plus a little for the model that does the thinking. Calls in our tests came to about 5–10¢ a minute. The call bar shows the running cost, and at $2 the call stops listening and asks whether to keep going.
 
+## What changed in 0.3.2
+
+This release fixes five reliability issues without resetting your course progress or project files:
+
+- Mentor replies display code as text; only course-authored content can create interactive lesson controls.
+- Editor saves stay ordered, keep unsaved drafts after a failure, and wait before navigating away. Running or submitting an older snapshot cannot overwrite newer edits.
+- Progress writes are validated and atomic, with five rolling backups and visible recovery when a valid backup is available. Unrecoverable state stops startup instead of resetting your course.
+- The mentor refreshes its lesson context when you navigate, including transitions between voice and text.
+- Spaced review uses separate exercise drafts. Its first graded submission determines recall credit, leaving your original work intact.
+
 ## Good to know
 
 The sandbox runs your code as a normal program with your own permissions. That's fine for your own code on your own computer, and it's why the course isn't hosted. Don't paste in code you don't trust.
