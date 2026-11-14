@@ -2,9 +2,10 @@
 //  - the *reference* Taskforge API (course solution, seeded DB) used by lessons and React previews
 //  - *your* Taskforge (finale "Launch"), built from your workspace files
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as esbuild from 'esbuild';
+import { guardFile, LOOP_GUARD_RUNTIME } from './loop-guard.js';
 import { ROOT, MONGO_BASE, REFERENCE_PORT, LAUNCH_PORT, CONTENT_DIR, databaseName } from './paths.js';
 import { bundleNode, writeTree, type Files } from './runner.js';
 import { readFileSync, existsSync } from 'node:fs';
@@ -154,6 +155,23 @@ export async function proxyGraphQL(name: 'reference' | 'mine', body: unknown, au
 
 const bundles = new Map<string, { js: string; css: string }>();
 
+/**
+ * Every loop in the files being bundled gets a check, so a loop that never ends is stopped with a
+ * message instead of freezing the tab the learner is working in (see loop-guard.ts).
+ */
+const loopGuardPlugin: esbuild.Plugin = {
+  name: 'forge-loop-guard',
+  setup(build) {
+    const root = build.initialOptions.absWorkingDir!;
+    build.onLoad({ filter: /\.(tsx?|jsx?|mjs)$/ }, async (args) => {
+      if (!args.path.startsWith(root) || args.path.includes('node_modules')) return null;
+      const file = args.path.slice(root.length + 1).split('\\').join('/');
+      const contents = await guardFile(await readFile(args.path, 'utf8'), args.path, file);
+      return contents === null ? null : { contents, loader: 'js' };
+    });
+  },
+};
+
 export async function buildBrowserBundle(key: string, files: Files, entry: string) {
   const dir = join(ROOT, '.runs', 'web-' + key.replace(/[^a-z0-9-]/gi, '_'));
   await rm(dir, { recursive: true, force: true });
@@ -172,6 +190,7 @@ export async function buildBrowserBundle(key: string, files: Files, entry: strin
       sourcemap: 'inline',
       define: { 'process.env.NODE_ENV': '"development"' },
       logLevel: 'silent',
+      plugins: [loopGuardPlugin],
     });
     const js = result.outputFiles.find((f) => f.path.endsWith('.js'))?.text ?? '';
     const css = result.outputFiles.find((f) => f.path.endsWith('.css'))?.text ?? '';
@@ -210,11 +229,15 @@ export function previewHtml(key: string, title: string) {
 </style></head>
 <body><div id="root"></div>
 <script>
+  let loopTold = false;
   window.addEventListener('error', (e) => {
+    const loop = String(e.error?.message || e.message).startsWith('The loop at line');
+    if (loop && loopTold) return;
+    if (loop) loopTold = true;
     const el = document.createElement('pre'); el.className = 'preview-error';
-    el.textContent = 'Runtime error: ' + (e.error?.stack || e.message); document.body.prepend(el);
+    el.textContent = loop ? e.error.message : 'Runtime error: ' + (e.error?.stack || e.message); document.body.prepend(el);
   });
-</script>
+${LOOP_GUARD_RUNTIME}</script>
 <script type="module" src="./bundle.js"></script></body></html>`;
 }
 
